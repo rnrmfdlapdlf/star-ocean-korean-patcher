@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+Assets/
+tests/obj
+native/
+*.user
+*.suo
+*.cache
+*.pdb
+*.nupkg
+*.zip
