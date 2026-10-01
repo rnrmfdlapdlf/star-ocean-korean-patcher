@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -76,6 +76,7 @@ internal static class RuntimeTests
             Func<string, Type, Delegate> function = (name, type) => Marshal.GetDelegateForFunctionPointer(IntPtr.Add(module, built.Functions[name]), type);
             var set = (SetWide)function("set", typeof(SetWide)); var convert = (ConvertWide)function("convert", typeof(ConvertWide)); var rename = (Rename)function("rename", typeof(Rename)); var memo = (Memo)function("memo", typeof(Memo)); var guide = (Guide)function("guide", typeof(Guide));
             IntPtr metrics = Alloc(3072 * 24), fnt = Alloc(128), dstGlyphs = Alloc(40 * 20); Marshal.WriteIntPtr(fnt, 0x38, metrics); for (int i = 0; i < 3072; i++) Marshal.WriteInt32(metrics, i * 24, 67);
+            IntPtr pdcm = Alloc(256); Marshal.WriteInt32(pdcm, 0x4d434470); Marshal.WriteInt32(pdcm, 0x28, 256); Marshal.WriteInt32(pdcm, 0x2c, 256 + 3072 * 24); Marshal.WriteInt32(pdcm, 0x90, 3072); Marshal.WriteIntPtr(fnt, 8, pdcm);
             for (int i = 0; i < 9; i++)
             {
                 string original = Marshal.PtrToStringUni(saves[i]); Require(set(IntPtr.Zero, saves[i]) == 1, "Set return"); Require(Marshal.PtrToStringUni(chosen) == RuntimeModule.Names[i], "Name " + i);
@@ -83,6 +84,16 @@ internal static class RuntimeTests
                 for (int j = 0; j < count; j++) { int expected = mapping[RuntimeModule.Names[i][j].ToString()] + 1; Require(Marshal.ReadInt32(dstGlyphs, j * 40 + 28) == expected, "Glyph " + i + ":" + j); Require(Marshal.ReadIntPtr(dstGlyphs, j * 40 + 16) == IntPtr.Add(metrics, (expected - 1) * 24), "Metrics pointer"); }
                 Require(Marshal.PtrToStringUni(saves[i]) == original, "Save unchanged");
             }
+            set(IntPtr.Zero, saves[0]);
+            foreach (int available in new[] { 0, 2375, mapping["엣"], mapping["엣"] + 1 })
+            {
+                Marshal.WriteInt32(pdcm, 0x90, available); convert(fnt, chosen, dstGlyphs);
+                Require(Marshal.ReadInt32(dstGlyphs, 28) == (available > mapping["엣"] ? mapping["엣"] + 1 : 0), "Count boundary " + available);
+            }
+            Marshal.WriteInt32(pdcm, 0x90, 3072); Marshal.WriteInt32(pdcm, 0x2c, 256);
+            convert(fnt, chosen, dstGlyphs); Require(Marshal.ReadIntPtr(dstGlyphs, 16) == IntPtr.Zero, "Short metrics extent rejected");
+            Marshal.WriteInt32(pdcm, 0x2c, 256 + 3072 * 24); Marshal.WriteIntPtr(fnt, 8, IntPtr.Zero);
+            convert(fnt, chosen, dstGlyphs); Require(Marshal.ReadIntPtr(dstGlyphs, 16) == IntPtr.Zero, "Missing pDCM rejected"); Marshal.WriteIntPtr(fnt, 8, pdcm);
             Require(rename() == 0, "Japanese rename disabled"); language = 1; Require(rename() == 32, "Other language input preserved"); set(IntPtr.Zero, saves[0]); Require(chosen == saves[0], "Other language name preserved"); language = 0;
             IntPtr unrelated = Alloc(16); Marshal.Copy(System.Text.Encoding.Unicode.GetBytes("Other\0"), 0, unrelated, 12); set(IntPtr.Zero, unrelated); Require(chosen == unrelated, "Unrelated text preserved");
             IntPtr owner = Alloc(0x200), mesh = Alloc(0x240), xptr = Alloc(4), yptr = Alloc(4); Marshal.WriteIntPtr(owner, IntPtr.Add(game, 0xa64f88)); Marshal.WriteIntPtr(mesh, 8, owner); Marshal.WriteInt32(mesh, 0x1a4, 1);

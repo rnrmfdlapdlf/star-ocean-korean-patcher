@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -163,7 +163,9 @@ namespace SO4KoreanPatcher
                     if (count > lengths[at]) { lengths[at] = count; distances[at] = at - q[j]; }
                     if (count == max) break;
                 }
-                q.Add(at); if (q.Count > 256) q.RemoveRange(0, 128);
+                q.Add(at);
+                int expired = 0; while (expired < q.Count && at - q[expired] > window) expired++;
+                if (expired > 0) q.RemoveRange(0, expired);
             }
             var choices = new int[n]; var kind = new int[n]; var cost = new int[n + 1];
             for (int at = n - step; at >= 0; at -= step)
@@ -203,11 +205,12 @@ namespace SO4KoreanPatcher
                 return output.ToArray();
             }
         }
-        internal static byte[] Encode(byte[] raw, byte[] original, bool optimal = false)
+        internal static byte[] Encode(byte[] raw, byte[] original, bool optimal = false, int forcedMode = -1)
         {
             if (!BinaryData.Magic(original, 0, "SLZ")) return (byte[])raw.Clone();
-            int mode = original[3]; var old = Chunks(original);
-            if (mode == 1) mode = 2;
+            int mode = forcedMode == 2 ? 2 : original[3] == 0 ? 0 : raw.Length % 2 == 0 ? 3 : 2; var old = Chunks(original);
+            if (mode == original[3] && old.SelectMany(c => c.Raw).SequenceEqual(raw))
+                return BinaryData.Slice(original, 0, BinaryData.I32(original, 20) + BinaryData.I32(original, 8));
             using (var output = new MemoryStream())
             {
                 int headerSize = BinaryData.I32(original, 20); var head = BinaryData.Slice(original, 0, headerSize); output.Write(head, 0, head.Length);
@@ -215,7 +218,6 @@ namespace SO4KoreanPatcher
                 else for (int at = 0, index = 0; at < raw.Length; at += 65536, index++)
                 {
                     var chunk = BinaryData.Slice(raw, at, Math.Min(65536, raw.Length - at));
-                    if (index < old.Count && old[index].Packed != null && mode == original[3] && chunk.SequenceEqual(old[index].Raw)) { output.Write(old[index].Packed, 0, old[index].Packed.Length); continue; }
                     var packed = EncodeChunk(chunk, mode, optimal);
                     if (packed.Length < 65536) { output.WriteByte((byte)packed.Length); output.WriteByte((byte)(packed.Length >> 8)); output.Write(packed, 0, packed.Length); }
                     else { output.WriteByte(0); output.WriteByte(0); output.Write(chunk, 0, chunk.Length); output.Write(new byte[65536 - chunk.Length], 0, 65536 - chunk.Length); }

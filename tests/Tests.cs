@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -48,6 +48,17 @@ internal static class Tests
         string text="가나\n다〔G:16402〕〔ARG:0100〕가〔END〕~〔G:16423〕〔ARG:00010203〕";
         byte[] bytes=GameText.Encode(text,m); Check(GameText.Decode(bytes,inv)==text,"Nested names and zero-valued control arguments"); Check(GameText.End(bytes,0)==bytes.Length,"Full control span");
         Reject(()=>GameText.Encode("없는 글자",m),"Missing glyph rejected"); Reject(()=>GameText.Encode("가〔END〕나",m),"Early terminator rejected");
+        var fixedPool = new byte[512]; Encoding.ASCII.GetBytes("pDCM").CopyTo(fixedPool, 0);
+        foreach (var pair in new[] { new[] { 20, 512 }, new[] { 32, 80 }, new[] { 36, 128 }, new[] { 40, 256 }, new[] { 44, 280 }, new[] { 48, 384 }, new[] { 60, 2 }, new[] { 80, 1 }, new[] { 88, 2 }, new[] { 92, 4 } }) BinaryData.Put(fixedPool, pair[0], (uint)pair[1]);
+        fixedPool[128] = 1; fixedPool[132] = 5; fixedPool[256] = 77;
+        using (var compiler = new ResourceCompiler(font, "test"))
+        {
+            var changed = compiler.Text(new ResourceRecipe { records = new[] { new TextRecord { id = 1, text = "가다" } }, mapping = m }, fixedPool);
+            Check(BinaryData.I32(changed, 40) == 256 && BinaryData.I32(changed, 44) == 280 && BinaryData.I32(changed, 48) == 384, "Fixed pool retains all font offsets");
+            Check(BinaryData.I32(changed, 92) == 6, "Fixed pool adjusts only later string pointers");
+            Check(changed.Skip(256).SequenceEqual(fixedPool.Skip(256)), "Fixed pool leaves font bytes untouched");
+            Check(GameText.Records(changed)[2].SequenceEqual(GameText.Records(fixedPool)[2]), "Fixed pool preserves untranslated line");
+        }
         var rng=new Random(271828);
         foreach(int mode in new[]{2,3}) foreach(int size in new[]{2,256,65536,65538,131074})
         {
@@ -55,6 +66,7 @@ internal static class Tests
             var original=new byte[32]; Encoding.ASCII.GetBytes("SLZ").CopyTo(original,0); original[3]=(byte)mode; BinaryData.Put(original,20,32);
             foreach(bool optimal in new[]{false,true}) { byte[] encoded=Slz.Encode(raw,original,optimal); Check(Slz.Decode(encoded).SequenceEqual(raw),"SLZ roundtrip "+mode+":"+size); Check(Slz.Encode(raw,encoded,optimal).SequenceEqual(encoded),"Unchanged chunk reuse"); }
             Check(Slz.Decode(Slz.Stored(raw,original)).SequenceEqual(raw),"Stored SLZ");
+            if(size==256) { var fallback=Slz.Encode(raw,original,true,2); Check(fallback[3]==2&&Slz.Decode(fallback).SequenceEqual(raw),"Byte-mode capacity fallback roundtrip"); }
         }
         for(int n=0;n<50;n++) { var alpha=new byte[16]; rng.NextBytes(alpha); var decoded=Bc7Reader.Block(Bc7Alpha.Block(alpha),0); Check(alpha.Zip(decoded,(a,b)=>Math.Abs(a-b)).Max()<=10,"BC7 alpha quantization bound"); }
         var p=new List<int>();var progress=new MonotonicProgress(p.Add);foreach(int n in new[]{10,5,10,9999,2,10000})progress.Set(n);Check(p.SequenceEqual(new[]{10,9999,10000}),"Progress never decreases");
@@ -84,7 +96,13 @@ internal static class Tests
         var normal=Make("normal");Run(normal,null,true);Unchanged(normal);Check(!File.Exists(Path.Combine(normal.Root,PatchEngine.RecordName)),"Verify-only does not install");
         var progress=new List<int>();Run(normal,null,false,progress);Check(progress.Last()==10000&&progress.Zip(progress.Skip(1),(a,b)=>a<=b).All(v=>v),"Install progress");
         byte[] installed=File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin"));using(var s=new MemoryStream(installed)){var o=new OuterTable(BinaryData.Slice(installed,0,OuterTable.Size));var cap=new Kcap(s,o.Offset(0),o.Length(0));var actual=GameText.Records(Slz.Decode(cap.ReadPacked(s,o.Offset(0),0)));Check(actual[123].SequenceEqual(GameText.Encode("엣지",mapping)),"Translation installed");Check(actual[456].SequenceEqual(new byte[]{30,0}),"Untranslated record preserved");Check(cap.ReadPacked(s,o.Offset(0),1).SequenceEqual(normal.Before0.Skip(OuterTable.Size+512).Take(128)),"Unrelated member preserved");}
-        Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Second installation verifies without writing");
+        string previousBackup=Storage.Json<Journal>(File.ReadAllText(Path.Combine(normal.Root,PatchEngine.RecordName))).backupFolder;
+        Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Second installation restores and reapplies");
+        Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(normal.Root,PatchEngine.RecordName))).backupFolder!=previousBackup,"Reinstall creates a new original backup");
+        string upgradeRecord=Path.Combine(normal.Root,PatchEngine.RecordName);var prior=Storage.Json<Journal>(File.ReadAllText(upgradeRecord));prior.buildId="previous-build";Storage.AtomicJson(upgradeRecord,prior);
+        Reject(()=>Run(normal,null,true),"Verify-only cannot update another build");
+        Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Previous build restored then updated");
+        Check(Storage.Json<Journal>(File.ReadAllText(upgradeRecord)).buildId!="previous-build","Updated build recorded");
         string record=Path.Combine(normal.Root,PatchEngine.RecordName);var journal=Storage.Json<Journal>(File.ReadAllText(record));journal.state="installing";Storage.AtomicJson(record,journal);Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Interrupted journal recovery then reinstall");
         using(var file=File.Open(Path.Combine(normal.Root,"0000.bin"),FileMode.Open,FileAccess.Write)){file.Position=OuterTable.Size+64+145;file.WriteByte(77);}Reject(()=>Run(normal),"Changed target detected on second run");
         var failing=Make("rollback",true);Reject(()=>Run(failing,n=>{throw new IOException("Injected write failure");}),"Write fault propagated");Unchanged(failing);Check(!File.Exists(Path.Combine(failing.Root,"wininet.dll")),"No DLL after rollback");Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(failing.Root,PatchEngine.RecordName))).state=="rolled-back","Rollback recorded");Run(failing);Check(new FileInfo(Path.Combine(failing.Root,"0000.bin")).Length>failing.Before0.Length,"Static package relocated on overflow");
@@ -94,5 +112,10 @@ internal static class Tests
         var locked=Make("exclusive-lock");using(var file=File.Open(Path.Combine(locked.Root,"0000.bin"),FileMode.Open,FileAccess.Read,FileShare.Read))Reject(()=>Run(locked),"Exclusive write access required");Unchanged(locked);
         var corrupt=Make("data-hash");corrupt.Hash=new string('0',64);Reject(()=>Run(corrupt),"Package hash mismatch rejected");Unchanged(corrupt);
         var mod=Make("other-mod");File.WriteAllText(Path.Combine(mod.Root,"wininet.dll"),"user mod");Reject(()=>Run(mod),"Existing mod preserved");Unchanged(mod);Check(File.ReadAllText(Path.Combine(mod.Root,"wininet.dll"))=="user mod","Other DLL untouched");
+        var missing=Make("backup-list");Run(missing);var saved=File.ReadAllBytes(Path.Combine(missing.Root,"0000.bin"));
+        string missingRecord=Path.Combine(missing.Root,PatchEngine.RecordName);var missingJournal=Storage.Json<Journal>(File.ReadAllText(missingRecord));missingJournal.backups.Clear();Storage.AtomicJson(missingRecord,missingJournal);
+        Reject(()=>Run(missing),"Incomplete backup list blocks restore");Check(File.ReadAllBytes(Path.Combine(missing.Root,"0000.bin")).SequenceEqual(saved),"Backup validation fails before BIN writes");
+        var updating=Make("update-fault");Run(updating);Reject(()=>Run(updating,n=>{throw new IOException("Update write failure");}),"Update write fault propagated");Unchanged(updating);Run(updating);
+        Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(updating.Root,PatchEngine.RecordName))).state=="installed","Failed update can be retried");
     }
 }

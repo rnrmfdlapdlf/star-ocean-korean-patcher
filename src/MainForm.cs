@@ -21,11 +21,11 @@ namespace SO4KoreanPatcher
             base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (var pen = new Pen(Enabled ? Color.FromArgb(125, 146, 176) : Color.LightGray, 1))
             { pen.DashStyle = DashStyle.Dash; e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); }
-            int x = string.IsNullOrEmpty(FolderPath) ? Width / 2 - 16 : 16, y = Height / 2 - 11;
-            using (var brush = new SolidBrush(Enabled ? Color.FromArgb(218, 176, 92) : Color.Silver))
-            { e.Graphics.FillRectangle(brush, x, y - 4, 14, 7); e.Graphics.FillRectangle(brush, x, y, 32, 23); }
-            if (!string.IsNullOrEmpty(FolderPath))
-                TextRenderer.DrawText(e.Graphics, FolderPath, Font, new Rectangle(60, 8, Width - 70, Height - 16), ForeColor, TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            bool empty = string.IsNullOrEmpty(FolderPath);
+            TextRenderer.DrawText(e.Graphics, empty ? "게임이 설치된 폴더를 여기에 드래그&드롭 해주세요." : FolderPath,
+                Font, new Rectangle(12, 8, Width - 24, Height - 16), Enabled ? ForeColor : SystemColors.GrayText,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix |
+                (empty ? TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak : TextFormatFlags.PathEllipsis | TextFormatFlags.SingleLine));
         }
     }
     public sealed class MainForm : Form
@@ -78,6 +78,7 @@ namespace SO4KoreanPatcher
             {
                 await Task.Run(() => new PatchEngine(v => ((IProgress<int>)report).Report(v)).Run(folder, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SO4KoreanPatch.data"), BuildInfo.DataHash, false, null));
                 progress.Value = 10000;
+                MessageBox.Show(this, "패치가 완료되었습니다.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception e)
             {

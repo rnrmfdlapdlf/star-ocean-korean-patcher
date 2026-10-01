@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -111,6 +111,11 @@ namespace SO4KoreanPatcher
                     {
                         packed = recipe.font != null && recipe.font.common && movable ? Slz.Stored(target, original) : Slz.Encode(target, original);
                         if (!movable && packed.Length > archive.Members[location.member].Extent) packed = Slz.Encode(target, original, true);
+                        if (!movable && packed.Length > archive.Members[location.member].Extent)
+                        {
+                            var bytePacked = Slz.Encode(target, original, target.Length < 32768, 2);
+                            if (bytePacked.Length < packed.Length) packed = bytePacked;
+                        }
                         File.WriteAllBytes(compressedPath, packed);
                     }
                     int size = BinaryData.Magic(original, 0, "SLZ") ? BinaryData.Align(target.Length, 16) : target.Length;
@@ -123,13 +128,17 @@ namespace SO4KoreanPatcher
                     Storage.Require(movable && file == "0000.bin", "이동할 수 없는 패키지입니다.");
                     using (var rebuilt = new MemoryStream())
                     {
-                        Storage.Copy(files[file], start, rebuilt, outer.Length(first.outerId));
-                        foreach (var kv in replacements)
+                        rebuilt.Write(archive.Header, 0, archive.Header.Length);
+                        // Match the legacy KCAP rebuild: members remain in table order.
+                        foreach (var member in archive.Members)
                         {
-                            var member = archive.Members[kv.Key]; int at = member.Offset;
-                            if (kv.Value.Item1.Length > member.Extent) { rebuilt.Position = rebuilt.Length; ResourceCompiler.Pad(rebuilt, 16); at = (int)rebuilt.Position; }
-                            rebuilt.Position = at; rebuilt.Write(kv.Value.Item1, 0, kv.Value.Item1.Length);
-                            rebuilt.Position = 16 + kv.Key * 16 + 8; rebuilt.Write(BitConverter.GetBytes(kv.Value.Item2), 0, 4); rebuilt.Write(BitConverter.GetBytes(at), 0, 4);
+                            ResourceCompiler.Pad(rebuilt, 16); int at = (int)rebuilt.Length;
+                            Tuple<byte[], int> replacement;
+                            byte[] payload; int size;
+                            if (replacements.TryGetValue(member.Index, out replacement)) { payload = replacement.Item1; size = replacement.Item2; }
+                            else { payload = archive.ReadPacked(files[file], start, member.Index); size = member.Size; }
+                            rebuilt.Position = at; rebuilt.Write(payload, 0, payload.Length);
+                            rebuilt.Position = 16 + member.Index * 16 + 8; rebuilt.Write(BitConverter.GetBytes(size), 0, 4); rebuilt.Write(BitConverter.GetBytes(at), 0, 4);
                         }
                         rebuilt.Position = rebuilt.Length; ResourceCompiler.Pad(rebuilt, 16); int logical = (int)rebuilt.Length; rebuilt.Position = 12; rebuilt.Write(BitConverter.GetBytes(logical), 0, 4); ResourceCompiler.Pad(rebuilt, 2048); byte[] result = rebuilt.ToArray();
                         using (var check = new MemoryStream(result)) { var cap = new Kcap(check, 0, result.Length); foreach (var kv in replacements) Storage.Require(cap.ReadPacked(check, 0, kv.Key).SequenceEqual(kv.Value.Item1), "재생성 패키지 검증 실패"); }
@@ -145,7 +154,20 @@ namespace SO4KoreanPatcher
             }
             var originalTable = BinaryData.Read(files["0000.bin"], 0, OuterTable.Size);
             for (int p = 0; p < OuterTable.Size; p += 12) if (!BinaryData.Slice(originalTable, p, 12).SequenceEqual(BinaryData.Slice(updatedOuter.Encoded, p, 12))) Add("outer-table", "0000.bin", p, BinaryData.Slice(updatedOuter.Encoded, p, 12));
-            var global = package.Recipes.Values.First(r => r.font != null && r.font.common).mapping;
+            var commonRecipe = package.Recipes.Values.First(r => r.font != null && r.font.common);
+            var global = commonRecipe.mapping;
+            var commonData = Resource(commonRecipe.key);
+            if (BinaryData.I32(commonData, 48) > 0)
+            {
+                int count = checked(BinaryData.I32(commonData, 144) + BinaryData.I32(commonData, 160));
+                int metrics = BinaryData.I32(commonData, 40), end = BinaryData.I32(commonData, 44);
+                foreach (char ch in string.Concat(RuntimeModule.Names).Distinct())
+                {
+                    int glyph;
+                    Storage.Require(global.TryGetValue(ch.ToString(), out glyph) && glyph >= 0 && glyph < count && metrics + (long)(glyph + 1) * 24 <= end, "이름 글리프 범위 오류: " + ch);
+                    Storage.Require(BinaryData.I32(commonData, metrics + glyph * 24) > 0, "이름 글리프가 비어 있습니다: " + ch);
+                }
+            }
             var module = RuntimeModule.Build(executable, global); File.WriteAllBytes(Path.Combine(stage, "wininet.dll"), module.Bytes);
             var plan = new Manifest { buildId = package.Plan.buildId, nativeHash = Storage.Hash(module.Bytes), operations = operations.ToArray(), files = package.Plan.sourceLengths.Select(kv => new FilePlan { name = kv.Key, sourceLength = kv.Value, targetLength = kv.Key == "0000.bin" ? append : kv.Value }).ToArray() };
             PatchEngine.ValidateOperations(plan.files, plan.operations); return plan;
@@ -177,6 +199,8 @@ namespace SO4KoreanPatcher
         private static void Rollback(string root, Journal j, Dictionary<string, FileStream> files)
         {
             Storage.Require(j.schema == 2, "지원하지 않는 설치 기록입니다."); ValidateOperations(j.files, j.operations); string backup = BackupRoot(root, j);
+            Storage.Require(j.backups != null && j.backups.Count == j.operations.Count(o => o.sourceLength > 0) &&
+                j.operations.Where(o => o.sourceLength > 0).All(o => j.backups.Count(b => b.file == o.targetFile && b.offset == o.targetOffset && b.length == o.sourceLength && b.hash == o.sourceHash) == 1), "복구 백업 목록이 설치 기록과 다릅니다.");
             foreach (var b in j.backups)
             {
                 Storage.Require(files.ContainsKey(b.file) && Regex.IsMatch(b.entry ?? "", "^[0-9]{4}\\.bak$") && b.offset >= 0 && b.length > 0 && b.offset <= j.files.Single(f => f.name == b.file).sourceLength - b.length, "복구 구간이 잘못되었습니다.");
@@ -203,9 +227,16 @@ namespace SO4KoreanPatcher
                     if (File.Exists(record))
                     {
                         var existing = Storage.Json<Journal>(File.ReadAllText(record, Storage.Utf8));
-                        Storage.Require(existing.schema == 2 && existing.buildId == package.Plan.buildId, "다른 버전의 설치 기록이 있습니다. 원본 상태에서 실행해 주세요."); ValidateOperations(existing.files, existing.operations);
+                        Storage.Require(existing.schema == 2, "지원하지 않는 설치 기록입니다."); ValidateOperations(existing.files, existing.operations);
                         Storage.Require(existing.files.All(f => package.Plan.sourceLengths[f.name] == f.sourceLength), "설치 기록의 원본 크기가 다릅니다.");
-                        if (existing.state == "installed") { Verify(files, existing.files, existing.operations, 0, 9800); VerifyExtra(root, existing); progress.Set(10000); return; }
+                        if (existing.state == "installed")
+                        {
+                            Verify(files, existing.files, existing.operations, 0, verifyOnly ? 9800 : 500); VerifyExtra(root, existing);
+                            if (verifyOnly) { Storage.Require(existing.buildId == package.Plan.buildId, "다른 빌드가 설치되어 있습니다. 한글 패치 버튼으로 업데이트해 주세요."); progress.Set(10000); return; }
+                            // A durable recovery state also covers interruption while restoring the previous build.
+                            existing.state = "installing"; Storage.AtomicJson(record, existing);
+                            Rollback(root, existing, files);
+                        }
                         if (existing.state == "installing") { Storage.Require(!verifyOnly, "미완료 설치 기록이 있습니다. 패치 프로그램으로 복구해 주세요."); Rollback(root, existing, files); }
                         else Storage.Require(existing.state == "rolled-back", "알 수 없는 설치 상태입니다.");
                     }

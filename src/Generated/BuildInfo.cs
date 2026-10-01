@@ -5,4 +5,4 @@ using System.Reflection;
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("2026.10.1.0")]
 [assembly: AssemblyInformationalVersion("v261001")]
-namespace SO4KoreanPatcher { internal static class BuildInfo { internal const string Version = "v261001"; internal const string Id = "d1c3b0ffb4187668d3cb195c"; internal const string DataHash = "0aa735c9571756e221e09c11311871aed079d21b1b9544e1aac787d20f979c64"; } }
+namespace SO4KoreanPatcher { internal static class BuildInfo { internal const string Version = "v261001"; internal const string Id = "a20ac85d755044ead250b675"; internal const string DataHash = "c5235b2e669683304ddcc74974e183b0c1762fdd8596a8040676e75bd6aa0592"; } }
