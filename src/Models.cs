@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -17,13 +17,13 @@ namespace SO4KoreanPatcher
     }
     public sealed class Operation
     {
-        public string label, sourceFile, sourceHash, targetFile, targetHash, stageFile;
+        public string label, sourceFile, sourceHash, targetFile, targetHash, stageFile, deltaHash;
         public long sourceOffset, sourceLength, targetOffset, targetLength;
     }
     public sealed class Manifest
     {
         public int schema;
-        public string format, version, builtAt, author, exeHash, nativeHash, buildId;
+        public string format, version, builtAt, author, exeHash, nativeHash, buildId, decoderHash, baseline;
         public FilePlan[] files;
         public Operation[] operations;
     }

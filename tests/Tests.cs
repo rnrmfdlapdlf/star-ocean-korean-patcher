@@ -1,121 +1,68 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.IO.Compression;
-using System.Linq;
-using System.Text;
-using SO4KoreanPatcher;
-
+using System;using System.IO;using System.IO.Compression;using System.Linq;using System.Collections.Generic;using System.Runtime.InteropServices;using Microsoft.Win32.SafeHandles;using SO4KoreanPatcher;
 internal static class Tests
 {
-    private static int assertions;
-    private static string output, project;
-    private static byte[] executable, font;
-    private static Dictionary<string,int> mapping;
-    private static void Check(bool ok, string why) { assertions++; if (!ok) throw new Exception(why); }
-    private static void Reject(Action action, string why) { bool failed=false; try { action(); } catch (IOException) { failed=true; } catch (InvalidDataException) { failed=true; } Check(failed, why); }
-    private static void Main(string[] args)
-    {
-        AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false); AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
-        try
-        {
-            if(args.Length!=2) throw new ArgumentException("Tests game-root isolated-output-directory");
-            string root=Path.GetFullPath(args[0]); project=Path.Combine(root,"SO4KoreanPatcher"); output=Path.GetFullPath(args[1]); Directory.CreateDirectory(output);
-            executable=CompactExecutable(File.ReadAllBytes(Path.Combine(root,"StarOceanTheLastHope.exe")));
-            font=File.ReadAllBytes(Path.Combine(project,"Assets/NotoSansKR-Medium.ttf"));
-            mapping=File.ReadLines(Path.Combine(project,"Assets/Translations.jsonl")).Select(Storage.Json<ResourceRecipe>).First(r=>r.font!=null&&r.font.common).mapping;
-            TextAndCompression(); InstallTransactions(); RuntimeTests.Run(new[]{root,Path.Combine(output,"runtime")});
-            Console.WriteLine("PASS semantic assertions="+assertions);
-        }
-        catch(Exception e) { Console.Error.WriteLine(e); Environment.ExitCode=1; }
-    }
-    private static byte[] CompactExecutable(byte[] original)
-    {
-        var pe=new PeReader(original); int[] code={0x77c105,0x6900a8,0x67f00e,0x67fb26,0x77c000,0x779660,0x75f5f0,0x76d510,0x754de0,0x4bede90,0x783de0};
-        int[] slots={0x9dc430,0x9dc6a0,0xa64ed0,0xa65140,0xa82fa0,0xa90b40,0xaad6f0,0xa81628};
-        var pages=code.Concat(slots).Select(r=>r&~4095).Distinct().OrderBy(r=>r).ToArray(); var result=new byte[4096+pages.Length*4096];
-        Buffer.BlockCopy(original,0,result,0,4096); Buffer.BlockCopy(BitConverter.GetBytes((ushort)pages.Length),0,result,pe.Pe+6,2);
-        BinaryData.Put(result,pe.Optional+60,4096);
-        for(int i=0;i<pages.Length;i++) { int h=pe.Sections+i*40; Array.Clear(result,h,40); BinaryData.Put(result,h+8,4096); BinaryData.Put(result,h+12,(uint)pages[i]); BinaryData.Put(result,h+16,4096); BinaryData.Put(result,h+20,(uint)(4096+i*4096)); }
-        var target=new PeReader(result);
-        foreach(int r in code) Buffer.BlockCopy(pe.At(r,16),0,result,target.Offset(r),16);
-        foreach(int r in slots) Buffer.BlockCopy(pe.At(r,8),0,result,target.Offset(r),8);
-        return result;
-    }
-    private static void TextAndCompression()
-    {
-        var m=new Dictionary<string,int>{{"가",0},{"나",126},{"다",127},{"~",2100}}; var inv=m.ToDictionary(k=>k.Value,k=>k.Key);
-        string text="가나\n다〔G:16402〕〔ARG:0100〕가〔END〕~〔G:16423〕〔ARG:00010203〕";
-        byte[] bytes=GameText.Encode(text,m); Check(GameText.Decode(bytes,inv)==text,"Nested names and zero-valued control arguments"); Check(GameText.End(bytes,0)==bytes.Length,"Full control span");
-        Reject(()=>GameText.Encode("없는 글자",m),"Missing glyph rejected"); Reject(()=>GameText.Encode("가〔END〕나",m),"Early terminator rejected");
-        var fixedPool = new byte[512]; Encoding.ASCII.GetBytes("pDCM").CopyTo(fixedPool, 0);
-        foreach (var pair in new[] { new[] { 20, 512 }, new[] { 32, 80 }, new[] { 36, 128 }, new[] { 40, 256 }, new[] { 44, 280 }, new[] { 48, 384 }, new[] { 60, 2 }, new[] { 80, 1 }, new[] { 88, 2 }, new[] { 92, 4 } }) BinaryData.Put(fixedPool, pair[0], (uint)pair[1]);
-        fixedPool[128] = 1; fixedPool[132] = 5; fixedPool[256] = 77;
-        using (var compiler = new ResourceCompiler(font, "test"))
-        {
-            var changed = compiler.Text(new ResourceRecipe { records = new[] { new TextRecord { id = 1, text = "가다" } }, mapping = m }, fixedPool);
-            Check(BinaryData.I32(changed, 40) == 256 && BinaryData.I32(changed, 44) == 280 && BinaryData.I32(changed, 48) == 384, "Fixed pool retains all font offsets");
-            Check(BinaryData.I32(changed, 92) == 6, "Fixed pool adjusts only later string pointers");
-            Check(changed.Skip(256).SequenceEqual(fixedPool.Skip(256)), "Fixed pool leaves font bytes untouched");
-            Check(GameText.Records(changed)[2].SequenceEqual(GameText.Records(fixedPool)[2]), "Fixed pool preserves untranslated line");
-        }
-        var rng=new Random(271828);
-        foreach(int mode in new[]{2,3}) foreach(int size in new[]{2,256,65536,65538,131074})
-        {
-            var raw=new byte[size]; rng.NextBytes(raw); for(int i=20;i<raw.Length;i++) if(i%500<300)raw[i]=raw[i%20];
-            var original=new byte[32]; Encoding.ASCII.GetBytes("SLZ").CopyTo(original,0); original[3]=(byte)mode; BinaryData.Put(original,20,32);
-            foreach(bool optimal in new[]{false,true}) { byte[] encoded=Slz.Encode(raw,original,optimal); Check(Slz.Decode(encoded).SequenceEqual(raw),"SLZ roundtrip "+mode+":"+size); Check(Slz.Encode(raw,encoded,optimal).SequenceEqual(encoded),"Unchanged chunk reuse"); }
-            Check(Slz.Decode(Slz.Stored(raw,original)).SequenceEqual(raw),"Stored SLZ");
-            if(size==256) { var fallback=Slz.Encode(raw,original,true,2); Check(fallback[3]==2&&Slz.Decode(fallback).SequenceEqual(raw),"Byte-mode capacity fallback roundtrip"); }
-        }
-        for(int n=0;n<50;n++) { var alpha=new byte[16]; rng.NextBytes(alpha); var decoded=Bc7Reader.Block(Bc7Alpha.Block(alpha),0); Check(alpha.Zip(decoded,(a,b)=>Math.Abs(a-b)).Max()<=10,"BC7 alpha quantization bound"); }
-        var p=new List<int>();var progress=new MonotonicProgress(p.Add);foreach(int n in new[]{10,5,10,9999,2,10000})progress.Set(n);Check(p.SequenceEqual(new[]{10,9999,10000}),"Progress never decreases");
-    }
-    private sealed class Fixture { internal string Root,Data,Hash; internal byte[] Before0,Before1; }
-    private static void Add(ZipArchive z,string name,byte[] bytes) { using(var s=z.CreateEntry(name,CompressionLevel.Optimal).Open())s.Write(bytes,0,bytes.Length); }
-    private static Fixture Make(string label,bool large=false,bool movable=true)
-    {
-        string root=Path.Combine(output,label+"-"+Guid.NewGuid().ToString("N").Substring(0,8)); Directory.CreateDirectory(root);
-        var text=new byte[256];Encoding.ASCII.GetBytes("pDCM").CopyTo(text,0);BinaryData.Put(text,20,256);BinaryData.Put(text,32,128);BinaryData.Put(text,36,144);BinaryData.Put(text,60,2);
-        BinaryData.Put(text,128,123);BinaryData.Put(text,132,0);BinaryData.Put(text,136,456);BinaryData.Put(text,140,2);text[144]=20;text[146]=30;
-        var pkg=new byte[2048];Encoding.ASCII.GetBytes("KCAP").CopyTo(pkg,0);BinaryData.Put(pkg,8,2);BinaryData.Put(pkg,12,2048);BinaryData.Put(pkg,24,256);BinaryData.Put(pkg,28,64);BinaryData.Put(pkg,40,128);BinaryData.Put(pkg,44,512);Buffer.BlockCopy(text,0,pkg,64,text.Length);for(int i=512;i<640;i++)pkg[i]=(byte)i;
-        var outer=new OuterTable(new byte[OuterTable.Size]);outer.Relocate(0,OuterTable.Size,pkg.Length);
-        var b0=new byte[OuterTable.Size+pkg.Length];Buffer.BlockCopy(outer.Encoded,0,b0,0,outer.Encoded.Length);Buffer.BlockCopy(pkg,0,b0,OuterTable.Size,pkg.Length);var b1=new byte[OuterTable.Size];b1[111]=99;
-        File.WriteAllBytes(Path.Combine(root,"0000.bin"),b0);File.WriteAllBytes(Path.Combine(root,"0001.bin"),b1);File.WriteAllBytes(Path.Combine(root,"StarOceanTheLastHope.exe"),executable);
-        var recipe=new ResourceRecipe{key=new string('a',20),kind="text",sourceHash=Storage.Hash(text),sourceSize=text.Length,mode=1,mapping=mapping,records=new[]{new TextRecord{id=123,text=large?string.Concat(Enumerable.Repeat("엣지",500)):"엣지"}},font=new FontRule{common=true,count=3072,fontSize=24,glyphs=new GlyphRule[0]}};
-        var manifest=new SemanticManifest{version="v261001",builtAt="test",buildId=new string('b',24),fontHash=Storage.Hash(font),sourceLengths=new Dictionary<string,long>{{"0000.bin",b0.Length},{"0001.bin",b1.Length}},locations=new[]{new ResourceLocation{package=movable?"0003.pkg":"0627.pkg",outerId=0,member=0,recipe=recipe.key}}};
-        string data=Path.Combine(root,"test.data");using(var z=ZipFile.Open(data,ZipArchiveMode.Create)){Add(z,"manifest.json",Storage.Utf8.GetBytes(Storage.Json(manifest)));Add(z,"translations.jsonl",Storage.Utf8.GetBytes(Storage.Json(recipe)+"\n"));Add(z,"NotoSansKR-Medium.ttf",font);}
-        return new Fixture{Root=root,Data=data,Hash=Storage.HashFile(data),Before0=b0,Before1=b1};
-    }
-    private static void Run(Fixture f,Action<int> after=null,bool verify=false,List<int> progress=null)
-    { new PatchEngine(v=>{if(progress!=null)progress.Add(v);}){AfterWrite=after}.Run(f.Root,f.Data,f.Hash,verify,Path.Combine(f.Root,"verify")); }
-    private static void Unchanged(Fixture f)
-    {Check(File.ReadAllBytes(Path.Combine(f.Root,"0000.bin")).SequenceEqual(f.Before0),"Original BIN0 restored");Check(File.ReadAllBytes(Path.Combine(f.Root,"0001.bin")).SequenceEqual(f.Before1),"Unrelated BIN1 preserved");Check(File.ReadAllBytes(Path.Combine(f.Root,"StarOceanTheLastHope.exe")).SequenceEqual(executable),"EXE untouched");}
-    private static void InstallTransactions()
-    {
-        var normal=Make("normal");Run(normal,null,true);Unchanged(normal);Check(!File.Exists(Path.Combine(normal.Root,PatchEngine.RecordName)),"Verify-only does not install");
-        var progress=new List<int>();Run(normal,null,false,progress);Check(progress.Last()==10000&&progress.Zip(progress.Skip(1),(a,b)=>a<=b).All(v=>v),"Install progress");
-        byte[] installed=File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin"));using(var s=new MemoryStream(installed)){var o=new OuterTable(BinaryData.Slice(installed,0,OuterTable.Size));var cap=new Kcap(s,o.Offset(0),o.Length(0));var actual=GameText.Records(Slz.Decode(cap.ReadPacked(s,o.Offset(0),0)));Check(actual[123].SequenceEqual(GameText.Encode("엣지",mapping)),"Translation installed");Check(actual[456].SequenceEqual(new byte[]{30,0}),"Untranslated record preserved");Check(cap.ReadPacked(s,o.Offset(0),1).SequenceEqual(normal.Before0.Skip(OuterTable.Size+512).Take(128)),"Unrelated member preserved");}
-        string previousBackup=Storage.Json<Journal>(File.ReadAllText(Path.Combine(normal.Root,PatchEngine.RecordName))).backupFolder;
-        Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Second installation restores and reapplies");
-        Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(normal.Root,PatchEngine.RecordName))).backupFolder!=previousBackup,"Reinstall creates a new original backup");
-        string upgradeRecord=Path.Combine(normal.Root,PatchEngine.RecordName);var prior=Storage.Json<Journal>(File.ReadAllText(upgradeRecord));prior.buildId="previous-build";Storage.AtomicJson(upgradeRecord,prior);
-        Reject(()=>Run(normal,null,true),"Verify-only cannot update another build");
-        Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Previous build restored then updated");
-        Check(Storage.Json<Journal>(File.ReadAllText(upgradeRecord)).buildId!="previous-build","Updated build recorded");
-        string record=Path.Combine(normal.Root,PatchEngine.RecordName);var journal=Storage.Json<Journal>(File.ReadAllText(record));journal.state="installing";Storage.AtomicJson(record,journal);Run(normal);Check(File.ReadAllBytes(Path.Combine(normal.Root,"0000.bin")).SequenceEqual(installed),"Interrupted journal recovery then reinstall");
-        using(var file=File.Open(Path.Combine(normal.Root,"0000.bin"),FileMode.Open,FileAccess.Write)){file.Position=OuterTable.Size+64+145;file.WriteByte(77);}Reject(()=>Run(normal),"Changed target detected on second run");
-        var failing=Make("rollback",true);Reject(()=>Run(failing,n=>{throw new IOException("Injected write failure");}),"Write fault propagated");Unchanged(failing);Check(!File.Exists(Path.Combine(failing.Root,"wininet.dll")),"No DLL after rollback");Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(failing.Root,PatchEngine.RecordName))).state=="rolled-back","Rollback recorded");Run(failing);Check(new FileInfo(Path.Combine(failing.Root,"0000.bin")).Length>failing.Before0.Length,"Static package relocated on overflow");
-        var tight=Make("fixed-slot",true,false);Reject(()=>Run(tight),"Audio package capacity failure is pre-write");Unchanged(tight);
-        var wrong=Make("wrong-source");using(var file=File.Open(Path.Combine(wrong.Root,"0000.bin"),FileMode.Open,FileAccess.Write)){file.Position=OuterTable.Size+64+144;file.WriteByte(80);}wrong.Before0=File.ReadAllBytes(Path.Combine(wrong.Root,"0000.bin"));Reject(()=>Run(wrong),"Wrong target member rejected");Unchanged(wrong);
-        var unrelated=Make("unrelated-byte");unrelated.Before1[222]=67;File.WriteAllBytes(Path.Combine(unrelated.Root,"0001.bin"),unrelated.Before1);Run(unrelated);Check(File.ReadAllBytes(Path.Combine(unrelated.Root,"0001.bin")).SequenceEqual(unrelated.Before1),"No whole-file hash requirement");
-        var locked=Make("exclusive-lock");using(var file=File.Open(Path.Combine(locked.Root,"0000.bin"),FileMode.Open,FileAccess.Read,FileShare.Read))Reject(()=>Run(locked),"Exclusive write access required");Unchanged(locked);
-        var corrupt=Make("data-hash");corrupt.Hash=new string('0',64);Reject(()=>Run(corrupt),"Package hash mismatch rejected");Unchanged(corrupt);
-        var mod=Make("other-mod");File.WriteAllText(Path.Combine(mod.Root,"wininet.dll"),"user mod");Reject(()=>Run(mod),"Existing mod preserved");Unchanged(mod);Check(File.ReadAllText(Path.Combine(mod.Root,"wininet.dll"))=="user mod","Other DLL untouched");
-        var missing=Make("backup-list");Run(missing);var saved=File.ReadAllBytes(Path.Combine(missing.Root,"0000.bin"));
-        string missingRecord=Path.Combine(missing.Root,PatchEngine.RecordName);var missingJournal=Storage.Json<Journal>(File.ReadAllText(missingRecord));missingJournal.backups.Clear();Storage.AtomicJson(missingRecord,missingJournal);
-        Reject(()=>Run(missing),"Incomplete backup list blocks restore");Check(File.ReadAllBytes(Path.Combine(missing.Root,"0000.bin")).SequenceEqual(saved),"Backup validation fails before BIN writes");
-        var updating=Make("update-fault");Run(updating);Reject(()=>Run(updating,n=>{throw new IOException("Update write failure");}),"Update write fault propagated");Unchanged(updating);Run(updating);
-        Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(updating.Root,PatchEngine.RecordName))).state=="installed","Failed update can be retried");
-    }
+ static int checks;static string project,work,encoder;static void Check(bool value,string why){checks++;if(!value)throw new Exception(why);}
+ static void Reject(Action a,string why){bool failed=false;try{a();}catch(IOException){failed=true;}catch(InvalidDataException){failed=true;}Check(failed,why);}
+ [DllImport("kernel32.dll",SetLastError=true)]static extern bool DeviceIoControl(SafeFileHandle file,uint code,IntPtr input,int inputSize,IntPtr output,int outputSize,out int returned,IntPtr overlapped);
+ static void Main(string[] args){try{project=Path.GetFullPath(args[0]);work=Path.GetFullPath(args[1]);Directory.CreateDirectory(work);encoder=Path.Combine(Path.GetDirectoryName(project),"tools/xdelta3-3.2.1/xdelta3-3.2.1-windows-x86_64/xdelta3.exe");if(args.Length>2&&args[2]=="full")Full(args[3]);else Transactions();Console.WriteLine("PASS "+checks+" assertions");}catch(Exception e){Console.Error.WriteLine(e);Environment.ExitCode=1;}}
+ static void Add(ZipArchive z,string name,byte[] bytes){using(var s=z.CreateEntry(name).Open())s.Write(bytes,0,bytes.Length);}
+ sealed class Fixture{internal string Root,Data,Hash;internal byte[] Zero,One;internal Manifest Plan;}
+ static Fixture Make(string name,int revision=0)
+ {
+  string root=Path.Combine(work,name+"-"+Guid.NewGuid().ToString("N").Substring(0,8));Directory.CreateDirectory(root);var b0=new byte[8192];var b1=new byte[4096];var rng=new Random(619);rng.NextBytes(b0);rng.NextBytes(b1);
+  File.WriteAllBytes(Path.Combine(root,"0000.bin"),b0);File.WriteAllBytes(Path.Combine(root,"0001.bin"),b1);var exe=new byte[]{1,2,3,4};File.WriteAllBytes(Path.Combine(root,"StarOceanTheLastHope.exe"),exe);
+  var ops=new List<Operation>();var patches=new List<byte[]>();
+  for(int i=0;i<3;i++)
+  {
+   string file=i==2?"0001.bin":"0000.bin";int at=i==2?64+revision*128:4096;int length=i==2?512:4096;byte[] source=(i==2?b1:b0).Skip(at).Take(length).ToArray();byte[] target=i==1?Enumerable.Range(0,512+revision*16).Select(x=>(byte)((x+revision)%8)).ToArray():(byte[])source.Clone();if(i!=1)for(int x=22;x<70;x++)target[x]=(byte)(x*3+revision);
+   string sourcePath=Path.Combine(root,"source"),targetPath=Path.Combine(root,"target"),deltaPath=Path.Combine(root,"delta");File.WriteAllBytes(sourcePath,source);File.WriteAllBytes(targetPath,target);
+   DeltaTool.Run(encoder,"-e -f -D -a -A -S none -s "+DeltaTool.Q(sourcePath)+" "+DeltaTool.Q(targetPath)+" "+DeltaTool.Q(deltaPath));byte[] delta=File.ReadAllBytes(deltaPath);Check(Vcdiff.Decode(source,delta,target.Length).SequenceEqual(target),"Independent xdelta/C# interoperability");
+   var cut=delta.Take(delta.Length-1).ToArray();Reject(()=>Vcdiff.Decode(source,cut,target.Length),"Truncated delta rejected");Reject(()=>Vcdiff.Decode(source,delta,target.Length-1),"Output bounds checked");var corrupt=(byte[])delta.Clone();corrupt[0]^=1;Reject(()=>Vcdiff.Decode(source,corrupt,target.Length),"Bad header rejected");
+   patches.Add(delta);ops.Add(new Operation{label="test-"+i,sourceFile=file,sourceOffset=at,sourceLength=length,sourceHash=Storage.Hash(source),targetFile=file,targetOffset=i==1?8192:at,targetLength=target.Length,targetHash=Storage.Hash(target),stageFile="deltas/"+i.ToString("D4")+".xdelta",deltaHash=Storage.Hash(delta)});
+  }
+  var native=File.ReadAllBytes(Path.Combine(project,"Assets/wininet.dll"));var plan=new Manifest{schema=3,format="xdelta-ranges-v1",version="v261001",buildId=new string((char)('b'+revision),24),exeHash=Storage.Hash(exe),nativeHash=Storage.Hash(native),files=new[]{new FilePlan{name="0000.bin",sourceLength=b0.Length,targetLength=b0.Length+512+revision*16},new FilePlan{name="0001.bin",sourceLength=b1.Length,targetLength=b1.Length}},operations=ops.ToArray()};
+  string data=Path.Combine(root,"test.data");using(var z=ZipFile.Open(data,ZipArchiveMode.Create)){Add(z,"manifest.json",Storage.Utf8.GetBytes(Storage.Json(plan)));Add(z,"wininet.dll",native);for(int i=0;i<patches.Count;i++)Add(z,ops[i].stageFile,patches[i]);}
+  return new Fixture{Root=root,Data=data,Hash=Storage.HashFile(data),Zero=b0,One=b1,Plan=plan};
+ }
+ static void Run(Fixture f,Action<int> fail=null,bool verify=false,List<int> progress=null){new PatchEngine(v=>{if(progress!=null)progress.Add(v);}){AfterWrite=fail}.Run(f.Root,f.Data,f.Hash,verify,f.Root);}
+ static void Original(Fixture f){Check(File.ReadAllBytes(Path.Combine(f.Root,"0000.bin")).SequenceEqual(f.Zero),"BIN0 original restored");Check(File.ReadAllBytes(Path.Combine(f.Root,"0001.bin")).SequenceEqual(f.One),"BIN1 original restored");}
+ static void Transactions()
+ {
+  var f=Make("normal");Run(f,null,true);Original(f);Check(!File.Exists(Path.Combine(f.Root,PatchEngine.RecordName)),"Verify is read-only");var progress=new List<int>();Run(f,null,false,progress);Check(progress.Last()==10000&&progress.Zip(progress.Skip(1),(a,b)=>b>a).All(x=>x),"Progress only rises");
+  byte[] installed=File.ReadAllBytes(Path.Combine(f.Root,"0000.bin"));foreach(var o in f.Plan.operations)using(var s=File.OpenRead(Path.Combine(f.Root,o.targetFile)))Check(Storage.HashRange(s,o.targetOffset,o.targetLength,null)==o.targetHash,"Installed target verified");
+  Check(installed.Take(4096).SequenceEqual(f.Zero.Take(4096)),"Untouched region exact");string record=Path.Combine(f.Root,PatchEngine.RecordName);var prior=Storage.Json<Journal>(File.ReadAllText(record));Run(f);Check(File.ReadAllBytes(Path.Combine(f.Root,"0000.bin")).SequenceEqual(installed),"Repatch restores then reapplies");Check(Storage.Json<Journal>(File.ReadAllText(record)).backupFolder!=prior.backupFolder,"Repatch creates new backup");
+  var legacy=Storage.Json<Journal>(File.ReadAllText(record));legacy.schema=2;foreach(var o in legacy.operations){o.sourceOffset=o.targetOffset;o.sourceLength=o.targetOffset>=legacy.files.Single(x=>x.name==o.targetFile).sourceLength?0:o.targetLength;}
+  Storage.AtomicJson(record,legacy);Run(f);Check(File.ReadAllBytes(Path.Combine(f.Root,"0000.bin")).SequenceEqual(installed),"Schema 2 backup migration");
+  var fail=Make("write-failure");Reject(()=>Run(fail,i=>{if(i==1)throw new IOException("injected");}),"Injected write fault propagated");Original(fail);Check(!File.Exists(Path.Combine(fail.Root,"wininet.dll")),"No DLL after rollback");Run(fail);Check(Storage.Json<Journal>(File.ReadAllText(Path.Combine(fail.Root,PatchEngine.RecordName))).state=="installed","Retry after rollback");
+  var damaged=Make("missing-backup");Run(damaged);string rec=Path.Combine(damaged.Root,PatchEngine.RecordName);var j=Storage.Json<Journal>(File.ReadAllText(rec));j.backups.Clear();Storage.AtomicJson(rec,j);byte[] saved=File.ReadAllBytes(Path.Combine(damaged.Root,"0000.bin"));Reject(()=>Run(damaged),"Incomplete backup rejected");Check(saved.SequenceEqual(File.ReadAllBytes(Path.Combine(damaged.Root,"0000.bin"))),"No writes before backup validation");
+  var duplicate=Make("duplicate-backup");Run(duplicate);string dupRecord=Path.Combine(duplicate.Root,PatchEngine.RecordName);var dupJournal=Storage.Json<Journal>(File.ReadAllText(dupRecord));var first=dupJournal.backups[0];string duplicateEntry="9999.bin";File.Copy(Path.Combine(duplicate.Root,dupJournal.backupFolder,first.entry),Path.Combine(duplicate.Root,dupJournal.backupFolder,duplicateEntry));dupJournal.backups[1]=new Backup{file=first.file,offset=first.offset,length=first.length,hash=first.hash,entry=duplicateEntry};Storage.AtomicJson(dupRecord,dupJournal);byte[] duplicateBefore=File.ReadAllBytes(Path.Combine(duplicate.Root,"0000.bin"));Reject(()=>Run(duplicate),"Duplicate backup coverage rejected");Check(duplicateBefore.SequenceEqual(File.ReadAllBytes(Path.Combine(duplicate.Root,"0000.bin"))),"Duplicate backup rejected before writes");
+  var restored=Make("externally-restored");Run(restored);File.WriteAllBytes(Path.Combine(restored.Root,"0000.bin"),restored.Zero);File.WriteAllBytes(Path.Combine(restored.Root,"0001.bin"),restored.One);File.Delete(Path.Combine(restored.Root,"wininet.dll"));string restoredRecord=Path.Combine(restored.Root,PatchEngine.RecordName);var stale=Storage.Json<Journal>(File.ReadAllText(restoredRecord));stale.schema=2;stale.backupFolder="SO4KoreanPatch.backup."+new string('d',32);Storage.AtomicJson(restoredRecord,stale);string recordHash=Storage.HashFile(restoredRecord),packedHash=Storage.HashFile(Path.Combine(restored.Root,"packed.txt"));Run(restored,null,true);Original(restored);Check(Storage.HashFile(restoredRecord)==recordHash&&Storage.HashFile(Path.Combine(restored.Root,"packed.txt"))==packedHash,"Externally restored verify leaves old journal and packed untouched");Run(restored);Check(Storage.Json<Journal>(File.ReadAllText(restoredRecord)).state=="installed","Externally restored original installs without old backup");foreach(var o in restored.Plan.operations)using(var s=File.OpenRead(Path.Combine(restored.Root,o.targetFile)))Check(Storage.HashRange(s,o.targetOffset,o.targetLength,null)==o.targetHash,"External restore final output exact");
+  var foreign=Make("foreign-leftover");Run(foreign);File.WriteAllBytes(Path.Combine(foreign.Root,"0000.bin"),foreign.Zero);File.WriteAllBytes(Path.Combine(foreign.Root,"0001.bin"),foreign.One);File.WriteAllBytes(Path.Combine(foreign.Root,"wininet.dll"),new byte[]{7,8,9});Reject(()=>Run(foreign),"Unknown leftover not overwritten");Original(foreign);Check(File.ReadAllBytes(Path.Combine(foreign.Root,"wininet.dll")).SequenceEqual(new byte[]{7,8,9}),"Unknown DLL preserved");
+  var wrong=Make("wrong-source");wrong.Zero[4120]^=1;File.WriteAllBytes(Path.Combine(wrong.Root,"0000.bin"),wrong.Zero);Reject(()=>Run(wrong),"Wrong source rejected");Original(wrong);
+  var changed=Make("damaged-delta");changed.Hash=new string('0',64);Reject(()=>Run(changed),"Bad package hash rejected");Original(changed);
+  var v1=Make("version-1",1);var v2=Make("version-2",2);var v3=Make("version-3",3);Run(v3);byte[] v3zero=File.ReadAllBytes(Path.Combine(v3.Root,"0000.bin")),v3one=File.ReadAllBytes(Path.Combine(v3.Root,"0001.bin"));Run(v1);
+  Action<Fixture,string> apply=(version,root)=>new PatchEngine(null).Run(root,version.Data,version.Hash,false,null);
+  Action<string> verifyV3=root=>{Check(File.ReadAllBytes(Path.Combine(root,"0000.bin")).SequenceEqual(v3zero),"Upgrade/reapply BIN0 equals clean latest install");Check(File.ReadAllBytes(Path.Combine(root,"0001.bin")).SequenceEqual(v3one),"Removed previous ranges restored and latest BIN1 exact");var record3=Storage.Json<Journal>(File.ReadAllText(Path.Combine(root,PatchEngine.RecordName)));Check(record3.buildId==v3.Plan.buildId&&record3.state=="installed","Latest version journal committed");foreach(var backup in record3.backups){byte[] originalBytes=backup.file=="0000.bin"?v3.Zero:v3.One;Check(File.ReadAllBytes(Path.Combine(root,record3.backupFolder,backup.entry)).SequenceEqual(originalBytes.Skip((int)backup.offset).Take((int)backup.length)),"Latest backup contains original bytes, not previously patched bytes");}};
+  apply(v3,v1.Root);verifyV3(v1.Root);for(int repeat=0;repeat<3;repeat++){apply(v3,v1.Root);verifyV3(v1.Root);}
+  var sequential=Make("sequential-upgrade",1);Run(sequential);apply(v2,sequential.Root);apply(v3,sequential.Root);verifyV3(sequential.Root);
+  Storage.AtomicJson(Path.Combine(work,"version-upgrade-tests.json"),new{passed=true,sequential="v1 -> v2 -> v3",skip="v1 -> v3",sameVersionRepeats=3,latestFilesEqualCleanInstall=true,backupBytesEqualOriginal=true,changedRangesDifferBetweenVersions=true});
+  Storage.AtomicJson(Path.Combine(work,"transaction-tests.json"),new{passed=true,assertions=checks});
+ }
+ static void Full(string game)
+ {
+  string root=Path.GetDirectoryName(project),fixture=Path.Combine(work,"customer-fixture");Directory.CreateDirectory(fixture);string data=Path.Combine(project,"bin/Release/SO4KoreanPatch.data");
+  using(var pkg=new DeltaPackage(data,Storage.HashFile(data)))
+  {
+   var inputs=new Dictionary<string,FileStream>();var outputs=new Dictionary<string,FileStream>();try{
+    foreach(var f in pkg.Plan.files){inputs[f.name]=File.OpenRead(Path.Combine(root,"backup_before_korean_patch/original_2026-07-11",f.name));var s=new FileStream(Path.Combine(fixture,f.name),FileMode.Create,FileAccess.ReadWrite,FileShare.None);int n;Check(DeviceIoControl(s.SafeFileHandle,0x900c4,IntPtr.Zero,0,IntPtr.Zero,0,out n,IntPtr.Zero),"Sparse test file");s.SetLength(f.sourceLength);outputs[f.name]=s;}
+    foreach(var o in pkg.Plan.operations){var b=DeltaTool.Read(inputs[o.sourceFile],o.sourceOffset,o.sourceLength);Check(Storage.Hash(b)==o.sourceHash,"Actual original range");outputs[o.sourceFile].Position=o.sourceOffset;outputs[o.sourceFile].Write(b,0,b.Length);}
+   }finally{foreach(var s in inputs.Values)s.Dispose();foreach(var s in outputs.Values)s.Dispose();}
+   File.Copy(Path.Combine(game,"StarOceanTheLastHope.exe"),Path.Combine(fixture,"StarOceanTheLastHope.exe"),true);
+   var values=new List<int>();var watch=System.Diagnostics.Stopwatch.StartNew();new PatchEngine(v=>{values.Add(v);}).Run(fixture,data,Storage.HashFile(data),false,null);
+   foreach(var o in pkg.Plan.operations)using(var s=File.OpenRead(Path.Combine(fixture,o.targetFile)))Check(Storage.HashRange(s,o.targetOffset,o.targetLength,null)==o.targetHash,"Full baseline range identical");
+   Check(Storage.HashFile(Path.Combine(fixture,"wininet.dll"))=="bf13768f254c83d6b79a44bac75086953904a9f30500f4ba6eb66b11d00f98ac","Exact known-good DLL");
+   Check(values.Last()==10000&&values.Zip(values.Skip(1),(a,b)=>a<b).All(x=>x),"Full progress monotonic");
+   Storage.AtomicJson(Path.Combine(work,"full-reference-test.json"),new{passed=true,operations=pkg.Plan.operations.Length,bytes=pkg.Plan.operations.Sum(o=>o.targetLength),assertions=checks,seconds=watch.Elapsed.TotalSeconds,fixture=fixture,nativeHash=pkg.Plan.nativeHash,fullGameExecuted=false,wholeBinHashed=false});Console.WriteLine("Full fixture equals reference in "+watch.Elapsed.TotalSeconds.ToString("F1")+" sec");
+  }
+ }
 }
