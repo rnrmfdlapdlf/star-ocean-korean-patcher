@@ -2,6 +2,11 @@
 
 이 프로그램은 아래와 같은 서드 파티 구성요소를 포함하고 있습니다.
 
+Xbox 360 구성에는 xdelta3 3.2.1 실행 파일이 포함됩니다.
+Project: https://github.com/jmacd/xdelta
+License: Apache License 2.0 (동봉한 xdelta-LICENSE.txt 참고)
+extract-xiso project: https://github.com/XboxDev/extract-xiso
+
 --------------------------------------------------
 extract-xiso
 

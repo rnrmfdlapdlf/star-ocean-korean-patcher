@@ -1,4 +1,4 @@
-using System;using System.IO;using System.IO.Compression;using System.Linq;using System.Collections.Generic;using SO4KoreanPatcher;
+﻿using System;using System.IO;using System.IO.Compression;using System.Linq;using System.Collections.Generic;using SO4KoreanPatcher;
 internal static class BuildPackage
 {
  static void Main(string[] args){try{if(args[0]=="prepare")Prepare(args);else if(args[0]=="data")Data(args[1]);else if(args[0]=="zip")Release(args[1]);else throw new ArgumentException();}catch(Exception e){Console.Error.WriteLine(e);Environment.ExitCode=1;}}
@@ -8,6 +8,10 @@ internal static class BuildPackage
   string original=Path.Combine(dev,"backup_before_korean_patch/original_2026-07-11"),reference=Path.Combine(dev,"work/SO4KoreanPatcher_menu_crash_20261001/current-before-reference/reference");
   string refreshed=Path.Combine(dev,"work/xdelta_project_20261001/refresh/latest-reference"),manifestPath=Path.Combine(dev,"tools/SO4KoreanPatcher.Build/local-work/manifest.json");
   if(File.Exists(Path.Combine(refreshed,"manifest.json"))){reference=refreshed;manifestPath=Path.Combine(refreshed,"manifest.json");}
+  string repaired=Path.Combine(dev,"work/fixes_20261002/latest-reference");
+  if(File.Exists(Path.Combine(repaired,"manifest.json"))){reference=repaired;manifestPath=Path.Combine(repaired,"manifest.json");}
+  string latest=Path.Combine(dev,"work/release_20261003/latest-reference");
+  if(File.Exists(Path.Combine(latest,"manifest.json"))){reference=latest;manifestPath=Path.Combine(latest,"manifest.json");}
   var plan=Storage.Json<Manifest>(File.ReadAllText(manifestPath));
   Storage.Require((plan.format=="source-copy-xor-v1"||plan.format=="xdelta-ranges-v1")&&plan.operations.Length>=1202,"정상 기준본 목록이 다릅니다.");
   string native=Path.Combine(project,"Assets/wininet.dll"),decoder=Path.Combine(Path.GetDirectoryName(encoder),"xdelta3decode.exe");
@@ -50,7 +54,7 @@ internal static class BuildPackage
   }
   if(File.Exists(file))File.Delete(file);File.Move(temp,file);
   File.WriteAllText(Path.Combine(project,"src/Generated/BuildInfo.cs"),"namespace SO4KoreanPatcher { internal static class BuildInfo { internal const string DataHash = \""+Storage.HashFile(file)+"\", Id = \""+plan.buildId+"\", Version = \""+plan.version+"\"; } }",Storage.Utf8);
-  foreach(string name in new[]{"README.md","LICENSE"})CopyUnchangedAware(Path.Combine(project,name),Path.Combine(release,name));
+  foreach(string name in new[]{"README.md","LICENSE"}){string target=Path.Combine(release,name);if(name=="README.md"&&File.Exists(target))continue;CopyUnchangedAware(Path.Combine(project,name),target);}
   foreach(string folder in new[]{"docs","samples"})if(Directory.Exists(Path.Combine(project,folder)))foreach(string path in Directory.GetFiles(Path.Combine(project,folder),"*",SearchOption.AllDirectories)){string dest=Path.Combine(release,path.Substring(project.Length+1));Directory.CreateDirectory(Path.GetDirectoryName(dest));CopyUnchangedAware(path,dest);}
   File.WriteAllText(Path.Combine(release,"SO4KoreanPatcher.exe.config"),"<?xml version=\"1.0\"?><configuration><startup><supportedRuntime version=\"v4.0\" sku=\".NETFramework,Version=v4.8\"/></startup><runtime><AppContextSwitchOverrides value=\"Switch.System.IO.UseLegacyPathHandling=false;Switch.System.IO.BlockLongPaths=false\"/></runtime></configuration>",Storage.Utf8);
   Console.WriteLine("Built patch data "+plan.version+" "+new FileInfo(file).Length+" bytes");

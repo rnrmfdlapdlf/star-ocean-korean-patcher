@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -51,7 +51,7 @@ namespace SO4KoreanPatcher
         private static void Idle() { foreach (var p in Process.GetProcessesByName("StarOceanTheLastHope")) { p.Dispose(); throw new IOException("게임을 종료한 뒤 다시 실행해 주세요."); } }
         internal static void Validate(FilePlan[] files, Operation[] operations)
         {
-            Storage.Require(files != null && files.Length == 2 && files.Select(f => f.name).OrderBy(x => x).SequenceEqual(new[] { "0000.bin", "0001.bin" }) && operations != null && operations.Length > 0 && operations.Length <= 20000, "적용 구간 목록이 잘못되었습니다.");
+            Storage.Require(files != null && files.Length == 2 && files.All(f => f != null) && files.Select(f => f.name).OrderBy(x => x).SequenceEqual(new[] { "0000.bin", "0001.bin" }) && operations != null && operations.Length > 0 && operations.Length <= 20000 && operations.All(o => o != null), "적용 구간 목록이 잘못되었습니다.");
             foreach (var f in files)
             {
                 Storage.Require(f.sourceLength >= 0 && f.targetLength >= f.sourceLength && f.targetLength < 256L * 1024 * 1024 * 1024, "게임 파일 크기가 잘못되었습니다.");
@@ -98,7 +98,7 @@ namespace SO4KoreanPatcher
             foreach (var o in j.operations) Storage.Require(Storage.HashRange(files[o.targetFile], o.targetOffset, o.targetLength, null) == o.targetHash, "설치된 패치 구간이 변경되었습니다: " + o.label);
             Storage.Require(File.Exists(Path.Combine(root, "wininet.dll")) && Storage.HashFile(Path.Combine(root, "wininet.dll")) == j.nativeHash && File.Exists(Path.Combine(root, "packed.txt")) && Storage.HashFile(Path.Combine(root, "packed.txt")) == j.packedHash, "설치된 패치 모듈이 변경되었습니다.");
         }
-        private static void Restore(string root, Journal j, Dictionary<string, FileStream> files)
+        private static void ValidateBackups(string root, Journal j, bool hashes)
         {
             string backup = BackupRoot(root, j);
             var needed = j.operations.Where(o => o.targetOffset < j.files.Single(f => f.name == o.targetFile).sourceLength).ToArray();
@@ -106,10 +106,54 @@ namespace SO4KoreanPatcher
             var names = new HashSet<string>(); var restored = new HashSet<Operation>();
             foreach (var b in j.backups)
             {
-                Storage.Require(Regex.IsMatch(b.entry ?? "", "^[0-9]{4,5}\\.(bin|bak)$") && names.Add(b.entry) && needed.Count(o => o.targetFile == b.file && o.targetOffset == b.offset && o.targetLength == b.length) == 1, "원본 복구 구간이 잘못되었습니다.");
+                Storage.Require(b != null && Regex.IsMatch(b.entry ?? "", "^[0-9]{4,5}\\.(bin|bak)$") && names.Add(b.entry) && needed.Count(o => o.targetFile == b.file && o.targetOffset == b.offset && o.targetLength == b.length) == 1, "원본 복구 구간이 잘못되었습니다.");
                 Storage.Require(restored.Add(needed.Single(o => o.targetFile == b.file && o.targetOffset == b.offset && o.targetLength == b.length)), "원본 복구 구간이 중복되었습니다.");
-                Storage.Require(File.Exists(Path.Combine(backup, b.entry)) && new FileInfo(Path.Combine(backup, b.entry)).Length == b.length && Storage.HashFile(Path.Combine(backup, b.entry)) == b.hash, "원본 복구 데이터가 손상되었습니다.");
+                Storage.Require(File.Exists(Path.Combine(backup, b.entry)) && new FileInfo(Path.Combine(backup, b.entry)).Length == b.length && Regex.IsMatch(b.hash ?? "", "^[a-f0-9]{64}$") && (!hashes || Storage.HashFile(Path.Combine(backup, b.entry)) == b.hash), "원본 복구 데이터가 손상되었습니다.");
             }
+        }
+        private static Journal RecoveryJournal(string root)
+        {
+            var j = Storage.Json<Journal>(File.ReadAllText(Path.Combine(root, RecordName)));
+            Storage.Require(j != null && (j.schema == 2 || j.schema == 3) && (j.state == "installed" || j.state == "installing"), "복구할 패치 기록이 없습니다.");
+            Validate(j.files, j.operations);
+            return j;
+        }
+        public static bool CanRestore(string root)
+        {
+            if (!IsGameFolder(root)) return false;
+            try { ValidateBackups(root, RecoveryJournal(root), false); return true; }
+            catch (InvalidDataException) { return false; }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+            catch (ArgumentException) { return false; }
+            catch (InvalidOperationException) { return false; }
+        }
+        public void RestoreOriginal(string root)
+        {
+            root = Path.GetFullPath(root);
+            Storage.Require(IsGameFolder(root), "게임 설치 폴더를 확인해 주세요."); Idle();
+            var j = RecoveryJournal(root);
+            var files = new Dictionary<string, FileStream>();
+            try
+            {
+                foreach (var f in j.files) files.Add(f.name, new FileStream(Path.Combine(root, f.name), FileMode.Open, FileAccess.ReadWrite, FileShare.None));
+                ValidateBackups(root, j, true); progress.Set(2500);
+                if (j.state == "installed") VerifyInstalled(root, j, files);
+                else
+                {
+                    VerifyRecordedLeftovers(root, j);
+                    foreach (var f in j.files) Storage.Require(files[f.name].Length >= f.sourceLength && files[f.name].Length <= f.targetLength, "복구할 게임 파일 크기가 기록과 다릅니다.");
+                }
+                progress.Set(5000); Idle();
+                j.state = "installing"; Storage.AtomicJson(Path.Combine(root, RecordName), j);
+                Restore(root, j, files); progress.Set(10000);
+            }
+            finally { foreach (var f in files.Values) f.Dispose(); }
+        }
+        private static void Restore(string root, Journal j, Dictionary<string, FileStream> files)
+        {
+            ValidateBackups(root, j, true);
+            string backup = BackupRoot(root, j);
             foreach (var b in j.backups) using (var input = File.OpenRead(Path.Combine(backup, b.entry))) { files[b.file].Position = b.offset; Storage.Copy(input, 0, files[b.file], b.length); }
             foreach (var f in j.files) { files[f.name].SetLength(f.sourceLength); files[f.name].Flush(true); }
             foreach (var b in j.backups) Storage.Require(Storage.HashRange(files[b.file], b.offset, b.length, null) == b.hash, "원본 복구 검증에 실패했습니다.");

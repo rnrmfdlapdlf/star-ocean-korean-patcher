@@ -16,6 +16,8 @@ namespace SO4KoreanPatcher
                 Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
                 if (args.Length == 2 && args[0] == "--render-preview")
                 { using (var form = new MainForm()) form.RenderPreview(Path.GetFullPath(args[1])); return 0; }
+                if (args.Length == 2 && args[0] == "--render-xbox-preview")
+                { using (var form = new MainForm()) { form.SelectXboxPreview(); form.RenderPreview(Path.GetFullPath(args[1])); } return 0; }
                 if (args.Length >= 3 && (args[0] == "--verify" || args[0] == "--install-test"))
                 {
                     string workspace = Path.GetFullPath(args[2]); Directory.CreateDirectory(workspace);
