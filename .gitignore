@@ -10,3 +10,4 @@ native/
 *.pdb
 *.nupkg
 *.zip
+DO_NOT_MODIFY_README_FILE

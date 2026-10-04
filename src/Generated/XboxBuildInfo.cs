@@ -1,1 +1,1 @@
-namespace SO4KoreanPatcher { internal static class XboxBuildInfo { internal const string ManifestHash = "89d8cd1359135b7763297631d60c09dfdd1167dc3603e457cb66cda0d2fd66bb"; } }
+namespace SO4KoreanPatcher { internal static class XboxBuildInfo { internal const string ManifestHash = "38737115489cb2110a6bf080d566291d92e51f7933c8f325cc87b06b42b9a1d5"; } }

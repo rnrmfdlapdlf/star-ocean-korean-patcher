@@ -26,6 +26,20 @@ namespace SO4KoreanPatcher
         public string format, version, builtAt, author, exeHash, nativeHash, buildId, decoderHash, baseline;
         public FilePlan[] files;
         public Operation[] operations;
+        public SteamCheatCatalog steamCheats;
+    }
+    [Flags]
+    public enum SteamCheatOptions { None = 0, MovementSpeed2x = 1, BattleRecovery = 2, SaveAnywhere = 4 }
+    public sealed class SteamCheatVariant
+    {
+        public int mask;
+        public string hash, forwardFile, forwardHash, reverseFile, reverseHash;
+    }
+    public sealed class SteamCheatCatalog
+    {
+        public int schema, length;
+        public string baseHash;
+        public SteamCheatVariant[] variants;
     }
     public sealed class Backup
     {
@@ -39,6 +53,9 @@ namespace SO4KoreanPatcher
         public Operation[] operations;
         public FilePlan[] files;
         public List<Backup> backups = new List<Backup>();
+        public Backup exeBackup;
+        public string exeHash;
+        public int cheatMask;
     }
     public sealed class MonotonicProgress
     {

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace SO4KoreanPatcher
 {
@@ -17,6 +18,13 @@ namespace SO4KoreanPatcher
         public string iso_sha256;
         public long iso_size;
         public XboxFile[] files;
+        public XboxCheatVariant[] cheats;
+    }
+    public sealed class XboxCheatVariant
+    {
+        public int mask;
+        public string delta, delta_sha256, source_sha256, target_sha256;
+        public long source_size, target_size;
     }
     public sealed class XboxTool { public string path, sha256; }
     public sealed class XboxManifest
@@ -42,19 +50,49 @@ namespace SO4KoreanPatcher
         }
         internal static void ValidateManifest(XboxManifest plan)
         {
-            Storage.Require(plan != null && plan.schema == 1 && plan.discs != null && plan.discs.Length == 3 && plan.discs.Select(d => d.disc).OrderBy(d => d).SequenceEqual(new[] { 1, 2, 3 }), "Xbox 360 패치 목록이 잘못되었습니다.");
+            Storage.Require(plan != null && plan.schema == 3 && plan.discs != null && plan.discs.Length == 3 && plan.discs.All(d => d != null) && plan.discs.Select(d => d.disc).OrderBy(d => d).SequenceEqual(new[] { 1, 2, 3 }), "Xbox 360 패치 목록이 잘못되었습니다.");
             foreach (var disc in plan.discs)
             {
-                Storage.Require(disc.iso_size > 0 && disc.files != null && disc.files.Length == 4, "디스크 파일 목록이 잘못되었습니다.");
+                Storage.Require(disc.iso_size > 0 && Hash(disc.iso_sha256) && disc.files != null && disc.files.Length == 4 && disc.files.All(f => f != null), "디스크 파일 목록이 잘못되었습니다.");
                 Storage.Require(disc.files.Select(f => f.path).OrderBy(n => n, StringComparer.Ordinal).SequenceEqual(new[] { "$SystemUpdate/su20076000_00000000", "default.xex", "soz0.bin", "soz1.bin" }), "지원하지 않는 디스크 파일 구성입니다.");
                 foreach (var f in disc.files)
+                {
                     Storage.Require(f.offset >= 0 && f.size > 0 && f.offset <= disc.iso_size - f.size && f.target_size > 0 && f.target_size < 0x100000000L, "디스크 파일 범위가 잘못되었습니다.");
+                    Storage.Require(Hash(f.sha256) && Hash(f.target_sha256), "디스크 파일 해시가 잘못되었습니다.");
+                    if (f.path == "$SystemUpdate/su20076000_00000000")
+                        Storage.Require(f.delta == null && f.delta_sha256 == null && f.size == f.target_size && f.sha256 == f.target_sha256, "시스템 업데이트 파일 정보가 잘못되었습니다.");
+                    else
+                        Storage.Require(f.delta == "disc" + disc.disc + "_" + Path.GetFileNameWithoutExtension(f.path) + ".xdelta" && Hash(f.delta_sha256), "디스크 차분 정보가 잘못되었습니다.");
+                }
+                Storage.Require(disc.cheats != null && disc.cheats.Length == 8 && disc.cheats.All(v => v != null) && disc.cheats.Select(v => v.mask).OrderBy(n => n).SequenceEqual(Enumerable.Range(0, 8)) && disc.cheats.Select(v => v.target_sha256).Distinct().Count() == 8, "Xbox 360 치트 조합 목록이 잘못되었습니다.");
+                var baseline = disc.files.Single(f => f.path == "default.xex");
+                foreach (var v in disc.cheats)
+                {
+                    Storage.Require(v.source_sha256 == baseline.target_sha256 && v.source_size == baseline.target_size && Hash(v.target_sha256) && v.target_size > 0 && v.target_size <= 128 * 1024 * 1024, "Xbox 360 치트 기준본 정보가 잘못되었습니다.");
+                    if (v.mask == 0)
+                        Storage.Require(v.delta == null && v.delta_sha256 == null && v.target_sha256 == baseline.target_sha256 && v.target_size == baseline.target_size, "Xbox 360 치트 미선택 기준본이 잘못되었습니다.");
+                    else
+                        Storage.Require(v.delta == "cheats/disc" + disc.disc + "-" + v.mask + ".xdelta" && Hash(v.delta_sha256), "Xbox 360 치트 차분 정보가 잘못되었습니다.");
+                }
             }
-            Storage.Require(plan.tools != null && plan.tools.Length == 2 && plan.tools.Any(t => t.path == "tools/exiso.exe") && plan.tools.Any(t => t.path == "tools/xdelta3.exe"), "Xbox 360 도구 목록이 잘못되었습니다.");
+            Storage.Require(plan.tools != null && plan.tools.Length == 2 && plan.tools.All(t => t != null && Hash(t.sha256)) && plan.tools.Select(t => t.path).OrderBy(n => n).SequenceEqual(new[] { "tools/exiso.exe", "tools/xdelta3.exe" }), "Xbox 360 도구 목록이 잘못되었습니다.");
+        }
+        private static bool Hash(string value)
+        { return Regex.IsMatch(value ?? "", "^[a-f0-9]{64}$"); }
+        internal static XboxFile[] SelectFiles(XboxDisc disc, SteamCheatOptions options)
+        {
+            SteamCheats.ValidateOptions(options);
+            var selected = disc.cheats.Single(v => v.mask == (int)options);
+            return disc.files.Select(f => f.path != "default.xex" ? f : new XboxFile {
+                path = f.path, offset = f.offset, size = f.size, sha256 = f.sha256,
+                delta = f.delta, delta_sha256 = f.delta_sha256,
+                target_size = selected.target_size, target_sha256 = selected.target_sha256
+            }).ToArray();
         }
 
-        public string[] Run(string[] isoPaths, string package)
+        public string[] Run(string[] isoPaths, string package, SteamCheatOptions options = SteamCheatOptions.None)
         {
+            SteamCheats.ValidateOptions(options);
             Storage.Require(isoPaths != null && isoPaths.Length == 3 && isoPaths.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 3 && isoPaths.All(p => File.Exists(p) && string.Equals(Path.GetExtension(p), ".iso", StringComparison.OrdinalIgnoreCase)), "서로 다른 원본 ISO 3개를 선택해 주세요.");
             string manifest = Path.Combine(package, "manifest.json");
             Storage.Require(File.Exists(manifest), "Xbox360 패치 자료가 없습니다. 배포 압축 파일 전체를 해제해 주세요.");
@@ -63,6 +101,7 @@ namespace SO4KoreanPatcher
             var plan = Storage.Json<XboxManifest>(Storage.Utf8.GetString(bytes)); ValidateManifest(plan);
             foreach (var tool in plan.tools) RequireHash(SafePath(package, tool.path), tool.sha256);
             foreach (var file in plan.discs.SelectMany(d => d.files).Where(f => f.delta != null)) RequireHash(SafePath(package, file.delta), file.delta_sha256);
+            foreach (var variant in plan.discs.SelectMany(d => d.cheats).Where(v => v.mask != 0)) RequireHash(SafePath(package, variant.delta), variant.delta_sha256);
             var sources = new Dictionary<int, FileStream>();
             var sourcePaths = new Dictionary<int, string>();
             var results = new List<string>();
@@ -87,10 +126,11 @@ namespace SO4KoreanPatcher
                 }
                 foreach (var disc in plan.discs.OrderBy(d => d.disc))
                 {
+                    var files = SelectFiles(disc, options);
                     int start = 2400 + (disc.disc - 1) * 2500;
                     string parent = Path.GetDirectoryName(sourcePaths[disc.disc]);
                     var drive = new DriveInfo(Path.GetPathRoot(parent));
-                    long required = disc.files.Sum(f => f.size + 2 * f.target_size) + 1024L * 1024 * 1024;
+                    long required = files.Sum(f => f.size + 2 * f.target_size) + 1024L * 1024 * 1024;
                     Storage.Require(!string.Equals(drive.DriveFormat, "FAT32", StringComparison.OrdinalIgnoreCase), "결과 ISO는 4 GB를 초과합니다. NTFS 또는 exFAT 위치에서 실행해 주세요.");
                     Storage.Require(drive.AvailableFreeSpace >= required, "원본 ISO 위치에 약 " + (required / (1024 * 1024 * 1024) + 1) + " GB의 여유 공간이 필요합니다.");
                     string iso = OutputPath(sourcePaths[disc.disc]);
@@ -99,7 +139,7 @@ namespace SO4KoreanPatcher
                     string partial = Path.Combine(work, "result.iso.partial");
                     try
                     {
-                    for (int i = 0; i < disc.files.Length; i++)
+                    for (int i = 0; i < files.Length; i++)
                     {
                         var f = disc.files[i]; string target = SafePath(extracted, f.path);
                         string source = f.delta == null ? target : SafePath(work, "source_" + f.path);
@@ -109,16 +149,22 @@ namespace SO4KoreanPatcher
                         RequireHash(source, f.sha256);
                         if (f.delta != null)
                         {
-                            message("Disc " + disc.disc + "/3 · 한글 패치 적용: " + f.path);
+                            message("Disc " + disc.disc + "/3 · 패치 적용: " + f.path);
                             RunTool(SafePath(package, "tools/xdelta3.exe"), "-d -D -R -s " + DeltaTool.Q(source) + " " + DeltaTool.Q(SafePath(package, f.delta)) + " " + DeltaTool.Q(target), Path.Combine(work, "disc" + disc.disc + "_" + f.path + ".log"));
                         }
                         Storage.Require(new FileInfo(target).Length == f.target_size, "패치된 파일 크기가 다릅니다: " + f.path);
-                        RequireHash(target, f.target_sha256); progress.Set(start + (i + 1) * 400);
+                        RequireHash(target, f.target_sha256);
+                        if (f.path == "default.xex")
+                        {
+                            if (options != SteamCheatOptions.None) message("Disc " + disc.disc + "/3 · 선택한 치트 적용 중");
+                            ApplyCheat(target, disc.cheats.Single(v => v.mask == (int)options), package, work);
+                        }
+                        progress.Set(start + (i + 1) * 400);
                     }
                     message("Disc " + disc.disc + "/3 · 결과 ISO 생성 중");
                     RunTool(SafePath(package, "tools/exiso.exe"), "-q -m -c " + DeltaTool.Q(extracted) + " " + DeltaTool.Q(partial), Path.Combine(work, "disc" + disc.disc + "_exiso.log"));
                     progress.Set(start + 2100); message("Disc " + disc.disc + "/3 · 결과 ISO 파일 확인 중");
-                    VerifyIso(partial, disc.files);
+                    VerifyIso(partial, files);
                     if (File.Exists(iso)) File.Replace(partial, iso, null); else File.Move(partial, iso);
                     results.Add(iso); progress.Set(start + 2500);
                     }
@@ -143,6 +189,23 @@ namespace SO4KoreanPatcher
         {
             string full = Path.GetFullPath(source);
             return Path.Combine(Path.GetDirectoryName(full), Path.GetFileNameWithoutExtension(full) + "_repacked.iso");
+        }
+        internal static void ApplyCheat(string executable, XboxCheatVariant variant, string package, string work)
+        {
+            Storage.Require(variant != null && variant.mask >= 0 && variant.mask <= 7 && File.Exists(executable) && new FileInfo(executable).Length == variant.source_size, "Xbox 360 치트 기준본 크기가 다릅니다.");
+            RequireHash(executable, variant.source_sha256);
+            if (variant.mask == 0)
+            {
+                Storage.Require(variant.delta == null && variant.delta_sha256 == null && variant.source_size == variant.target_size && variant.source_sha256 == variant.target_sha256, "Xbox 360 치트 미선택 정보가 잘못되었습니다.");
+                return;
+            }
+            string delta = SafePath(package, variant.delta);
+            RequireHash(delta, variant.delta_sha256);
+            string pending = SafePath(work, "selected_default.xex");
+            RunTool(SafePath(package, "tools/xdelta3.exe"), "-d -D -R -s " + DeltaTool.Q(executable) + " " + DeltaTool.Q(delta) + " " + DeltaTool.Q(pending), SafePath(work, "cheat.log"));
+            Storage.Require(new FileInfo(pending).Length == variant.target_size, "Xbox 360 치트 적용 결과 크기가 다릅니다.");
+            RequireHash(pending, variant.target_sha256);
+            File.Replace(pending, executable, null);
         }
         private static void RequireHash(string path, string hash)
         { Storage.Require(File.Exists(path) && Storage.HashFile(path) == hash, "파일이 없거나 해시가 다릅니다: " + path); }

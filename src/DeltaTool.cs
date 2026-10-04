@@ -23,9 +23,9 @@ namespace SO4KoreanPatcher
             Storage.Require(!path.Contains("\"") && !path.EndsWith("\\", StringComparison.Ordinal), "파일 경로가 잘못되었습니다.");
             return "\"" + path + "\"";
         }
-        internal static byte[] Read(Stream file, long offset, long size)
+        internal static byte[] Read(Stream file, long offset, long size, int maximumSize = 64 * 1024 * 1024)
         {
-            Storage.Require(offset >= 0 && size >= 0 && size <= 64L * 1024 * 1024 && offset <= file.Length - size, "파일 구간이 범위를 벗어났습니다.");
+            Storage.Require(maximumSize > 0 && maximumSize <= 128 * 1024 * 1024 && offset >= 0 && size >= 0 && size <= maximumSize && offset <= file.Length - size, "파일 구간이 범위를 벗어났습니다.");
             file.Position = offset; var result = new byte[(int)size]; Storage.ReadExactly(file, result, result.Length); return result;
         }
         internal static void WriteDurable(string path, byte[] bytes)

@@ -4,7 +4,7 @@ internal static class Tests
  static int checks;static string project,work,encoder;static void Check(bool value,string why){checks++;if(!value)throw new Exception(why);}
  static void Reject(Action a,string why){bool failed=false;try{a();}catch(IOException){failed=true;}catch(InvalidDataException){failed=true;}Check(failed,why);}
  [DllImport("kernel32.dll",SetLastError=true)]static extern bool DeviceIoControl(SafeFileHandle file,uint code,IntPtr input,int inputSize,IntPtr output,int outputSize,out int returned,IntPtr overlapped);
- static void Main(string[] args){try{project=Path.GetFullPath(args[0]);work=Path.GetFullPath(args[1]);Directory.CreateDirectory(work);encoder=Path.Combine(Path.GetDirectoryName(project),"tools/xdelta3-3.2.1/xdelta3-3.2.1-windows-x86_64/xdelta3.exe");if(args.Length>2&&args[2]=="full")Full(args[3]);else Transactions();Console.WriteLine("PASS "+checks+" assertions");}catch(Exception e){Console.Error.WriteLine(e);Environment.ExitCode=1;}}
+ static void Main(string[] args){try{project=Path.GetFullPath(args[0]);work=Path.GetFullPath(args[1]);Directory.CreateDirectory(work);encoder=Path.Combine(Path.GetDirectoryName(project),"tools/xdelta3-3.2.1/xdelta3-3.2.1-windows-x86_64/xdelta3.exe");if(args.Length>2&&args[2]=="full")Full(args[3]);else if(args.Length>2&&args[2]=="cleanup")BackupCleanup();else if(args.Length>3&&args[2]=="restore"){new PatchEngine(null).RestoreOriginal(Path.GetFullPath(args[3]));Check(!File.Exists(Path.Combine(args[3],PatchEngine.RecordName)),"Successful restoration removes journal");}else Transactions();Console.WriteLine("PASS "+checks+" assertions");}catch(Exception e){Console.Error.WriteLine(e);Environment.ExitCode=1;}}
  static void Add(ZipArchive z,string name,byte[] bytes){using(var s=z.CreateEntry(name).Open())s.Write(bytes,0,bytes.Length);}
  sealed class Fixture{internal string Root,Data,Hash;internal byte[] Zero,One;internal Manifest Plan;}
  static Fixture Make(string name,int revision=0)
@@ -49,7 +49,81 @@ internal static class Tests
   var recovery=Make("manual-restore");Check(!PatchEngine.CanRestore(recovery.Root),"No record disables restore");Run(recovery);Check(PatchEngine.CanRestore(recovery.Root),"Backup enables restore");var rp=new List<int>();new PatchEngine(v=>rp.Add(v)).RestoreOriginal(recovery.Root);Original(recovery);Check(rp.Last()==10000&&rp.Zip(rp.Skip(1),(a,b)=>b>a).All(x=>x),"Restore progress monotonic");Check(!PatchEngine.CanRestore(recovery.Root),"Completed restoration disables button");Check(!File.Exists(Path.Combine(recovery.Root,"wininet.dll"))&&!File.Exists(Path.Combine(recovery.Root,"packed.txt")),"Patch modules removed");Run(recovery);Check(PatchEngine.CanRestore(recovery.Root),"Repatch after manual restore");
   string rr=Path.Combine(recovery.Root,PatchEngine.RecordName);var rj=Storage.Json<Journal>(File.ReadAllText(rr));string bp=Path.Combine(recovery.Root,rj.backupFolder,rj.backups[0].entry);byte[] goodBackup=File.ReadAllBytes(bp);var badBackup=(byte[])goodBackup.Clone();badBackup[0]^=1;File.WriteAllBytes(bp,badBackup);string beforeRecord=Storage.HashFile(rr),beforeBin=Storage.HashFile(Path.Combine(recovery.Root,"0000.bin"));Reject(()=>new PatchEngine(null).RestoreOriginal(recovery.Root),"Corrupt backup rejects manual restore");Check(Storage.HashFile(rr)==beforeRecord&&Storage.HashFile(Path.Combine(recovery.Root,"0000.bin"))==beforeBin,"Rejected restore leaves game and journal unchanged");File.Delete(bp);Check(!PatchEngine.CanRestore(recovery.Root),"Missing backup disables restore");File.WriteAllBytes(bp,goodBackup);
   using(var fs=File.OpenWrite(Path.Combine(recovery.Root,"0000.bin"))){fs.Position=4120;fs.WriteByte(99);}Reject(()=>new PatchEngine(null).RestoreOriginal(recovery.Root),"Modified patch rejected");rj.schema=2;rj.state="installing";Storage.AtomicJson(rr,rj);new PatchEngine(null).RestoreOriginal(recovery.Root);Original(recovery);Check(!PatchEngine.CanRestore(recovery.Root),"Interrupted schema 2 restoration completes");
+  BackupCleanup();
+  RestoreCleanup();
   Storage.AtomicJson(Path.Combine(work,"transaction-tests.json"),new{passed=true,assertions=checks});
+ }
+ static void BackupCleanup()
+ {
+  var f=Make("backup-cleanup");Run(f);string record=Path.Combine(f.Root,PatchEngine.RecordName);
+  var installed=Storage.Json<Journal>(File.ReadAllText(record));string first=Path.Combine(f.Root,installed.backupFolder);
+  Func<string> folder=()=>{string p=Path.Combine(f.Root,"SO4KoreanPatch.backup."+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(p);return p;};
+  string old=folder();File.Copy(Path.Combine(first,installed.backups[0].entry),Path.Combine(old,"0000.bak"));File.WriteAllBytes(Path.Combine(old,SteamCheats.BackupName),new byte[]{1,2,3,4});
+  string foreign=folder();File.WriteAllText(Path.Combine(foreign,"notes.txt"),"user file");File.WriteAllBytes(Path.Combine(foreign,"0000.bin"),new byte[]{5});
+  string nested=folder();Directory.CreateDirectory(Path.Combine(nested,"user-folder"));File.WriteAllBytes(Path.Combine(nested,"0000.bin"),new byte[]{6});
+  string other=Path.Combine(f.Root,"backup_before_korean_patch");Directory.CreateDirectory(other);File.WriteAllBytes(Path.Combine(other,"0000.bin"),new byte[]{7});
+  string suffix=Path.Combine(f.Root,"SO4KoreanPatch.backup."+Guid.NewGuid().ToString("N")+"-copy");Directory.CreateDirectory(suffix);File.WriteAllBytes(Path.Combine(suffix,"0000.bin"),new byte[]{8});
+  string outside=Path.Combine(work,"junction-target-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(outside);File.WriteAllBytes(Path.Combine(outside,"0000.bin"),new byte[]{9});
+  string junction=Path.Combine(f.Root,"SO4KoreanPatch.backup."+Guid.NewGuid().ToString("N"));
+  var linkInfo=new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetEnvironmentVariable("WINDIR"),"System32\\cmd.exe"),"/d /c mklink /J "+DeltaTool.Q(junction)+" "+DeltaTool.Q(outside)){UseShellExecute=false,CreateNoWindow=true,WindowStyle=System.Diagnostics.ProcessWindowStyle.Hidden,RedirectStandardError=true,RedirectStandardOutput=true,WorkingDirectory=work,StandardErrorEncoding=System.Text.Encoding.GetEncoding(949),StandardOutputEncoding=System.Text.Encoding.GetEncoding(949)};
+  using(var process=System.Diagnostics.Process.Start(linkInfo)){string output=process.StandardOutput.ReadToEnd(),error=process.StandardError.ReadToEnd();process.WaitForExit();Check(process.ExitCode==0,"Junction fixture creation: "+output+error);}
+  Check((File.GetAttributes(junction)&FileAttributes.ReparsePoint)!=0,"Cleanup fixture contains a real junction");
+  string busy=folder();string busyFile=Path.Combine(busy,"0000.bin");File.WriteAllBytes(busyFile,new byte[]{10});
+  Run(f,null,true);Check(Directory.Exists(first)&&Directory.Exists(old),"Read-only verification never removes old backups");
+  Reject(()=>new PatchEngine(null).Run(f.Root,f.Data,new string('0',64),false,null),"Package failure blocks installation");
+  Check(Directory.Exists(first)&&Directory.Exists(old),"Preflight failure retains old backups");
+  Reject(()=>Run(f,i=>{if(i==1)throw new IOException("cleanup failure fixture");}),"Write fault prevents cleanup");
+  Check(Directory.Exists(first)&&Directory.Exists(old),"Rollback retains previous backups");Original(f);
+  string failed=Path.Combine(f.Root,Storage.Json<Journal>(File.ReadAllText(record)).backupFolder);
+  Run(f,i=>{if(i==2){var damaged=Storage.Json<Journal>(File.ReadAllText(record));string entry=Path.Combine(f.Root,damaged.backupFolder,damaged.backups[0].entry);byte[] bytes=File.ReadAllBytes(entry);bytes[0]^=1;File.WriteAllBytes(entry,bytes);}});
+  var checksum=Storage.Json<Journal>(File.ReadAllText(record));string uncheckedBackup=Path.Combine(f.Root,checksum.backupFolder);
+  Check(Directory.Exists(first)&&Directory.Exists(old)&&Directory.Exists(failed),"Damaged latest backup prevents obsolete backup deletion");
+  var restoreBytes=checksum.backups[0];File.WriteAllBytes(Path.Combine(uncheckedBackup,restoreBytes.entry),(restoreBytes.file=="0000.bin"?f.Zero:f.One).Skip((int)restoreBytes.offset).Take((int)restoreBytes.length).ToArray());
+  using(var held=new FileStream(busyFile,FileMode.Open,FileAccess.Read,FileShare.None))
+  {
+   Run(f);var latest=Storage.Json<Journal>(File.ReadAllText(record));
+   Check(!Directory.Exists(first)&&!Directory.Exists(old)&&!Directory.Exists(failed)&&!Directory.Exists(uncheckedBackup),"Successful patch removes obsolete and failed-install backups");
+   Check(Directory.Exists(Path.Combine(f.Root,latest.backupFolder))&&PatchEngine.CanRestore(f.Root),"Latest backup stays complete and restorable");
+   Check(Directory.Exists(busy)&&latest.state=="installed","Locked obsolete backup does not invalidate a successful patch");
+   Check(File.ReadAllText(Path.Combine(foreign,"notes.txt"))=="user file"&&File.Exists(Path.Combine(foreign,"0000.bin")),"User files protect the entire matching folder");
+   Check(Directory.Exists(Path.Combine(nested,"user-folder"))&&File.Exists(Path.Combine(nested,"0000.bin")),"Subdirectories protect the entire matching folder");
+   Check(File.Exists(Path.Combine(other,"0000.bin"))&&File.Exists(Path.Combine(suffix,"0000.bin")),"Other backup folder names are untouched");
+   Check(Directory.Exists(junction)&&File.ReadAllBytes(Path.Combine(outside,"0000.bin")).SequenceEqual(new byte[]{9}),"Junction and outside contents are untouched");
+  }
+  string second=Path.Combine(f.Root,Storage.Json<Journal>(File.ReadAllText(record)).backupFolder);Run(f);
+  Check(!Directory.Exists(busy)&&!Directory.Exists(second),"Next successful patch retries cleanup after locks are released");
+  new PatchEngine(null).RestoreOriginal(f.Root);Original(f);
+  Storage.AtomicJson(Path.Combine(work,"backup-cleanup-tests.json"),new{passed=true,keepsLatestBackup=true,cleansOldVersions=true,preservesForeignFiles=true,preservesJunctions=true,cleanupOnlyAfterSuccess=true,lockedBackupRetry=true,restorationVerified=true});
+ }
+ static void MarkRestored(Fixture f,Journal j)
+ {
+  File.WriteAllBytes(Path.Combine(f.Root,"0000.bin"),f.Zero);File.WriteAllBytes(Path.Combine(f.Root,"0001.bin"),f.One);
+  File.Delete(Path.Combine(f.Root,"wininet.dll"));File.Delete(Path.Combine(f.Root,"packed.txt"));j.state="rolled-back";Storage.AtomicJson(Path.Combine(f.Root,PatchEngine.RecordName),j);
+ }
+ static void RestoreCleanup()
+ {
+  var normal=Make("restore-cleanup");Run(normal);string record=Path.Combine(normal.Root,PatchEngine.RecordName);var j=Storage.Json<Journal>(File.ReadAllText(record));string backup=Path.Combine(normal.Root,j.backupFolder);
+  new PatchEngine(null).RestoreOriginal(normal.Root);Original(normal);Check(!File.Exists(record)&&!Directory.Exists(backup),"Verified manual restore removes its backup folder and journal");Run(normal);Check(PatchEngine.CanRestore(normal.Root),"Repatch works after restoration metadata is deleted");
+  var partial=Make("restore-cleanup-partial");Run(partial);record=Path.Combine(partial.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));backup=Path.Combine(partial.Root,j.backupFolder);MarkRestored(partial,j);
+  string first=Path.Combine(backup,j.backups.OrderBy(b=>b.entry,StringComparer.Ordinal).First().entry),last=Path.Combine(backup,j.backups.OrderBy(b=>b.entry,StringComparer.Ordinal).Last().entry);
+  using(var held=new FileStream(last,FileMode.Open,FileAccess.Read,FileShare.None)){Reject(()=>new PatchEngine(null).RestoreOriginal(partial.Root),"Locked file interrupts cleanup after successful restoration");Check(File.Exists(record)&&Directory.Exists(backup)&&!File.Exists(first),"Interrupted partial cleanup preserves its journal");Check(PatchEngine.CanRestore(partial.Root),"Partial cleanup remains retryable despite missing backup files");Original(partial);}
+  new PatchEngine(null).RestoreOriginal(partial.Root);Original(partial);Check(!File.Exists(record)&&!Directory.Exists(backup),"Retry completes partially interrupted cleanup");
+  var absent=Make("restore-cleanup-no-folder");Run(absent);record=Path.Combine(absent.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));backup=Path.Combine(absent.Root,j.backupFolder);MarkRestored(absent,j);foreach(var b in j.backups)File.Delete(Path.Combine(backup,b.entry));Directory.Delete(backup);
+  new PatchEngine(null).RestoreOriginal(absent.Root);Original(absent);Check(!File.Exists(record),"Cleanup resumes after backup folder deletion but before journal deletion");
+  var readOnly=Make("restore-cleanup-read-only");Run(readOnly);record=Path.Combine(readOnly.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));backup=Path.Combine(readOnly.Root,j.backupFolder);MarkRestored(readOnly,j);File.SetAttributes(Path.Combine(readOnly.Root,"0000.bin"),FileAttributes.ReadOnly);File.SetAttributes(Path.Combine(readOnly.Root,"0001.bin"),FileAttributes.ReadOnly);
+  new PatchEngine(null).RestoreOriginal(readOnly.Root);Original(readOnly);Check(!File.Exists(record)&&!Directory.Exists(backup),"Already restored read-only game files can be verified and artifacts cleaned");
+  var foreign=Make("restore-cleanup-user-file");Run(foreign);record=Path.Combine(foreign.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));backup=Path.Combine(foreign.Root,j.backupFolder);File.WriteAllText(Path.Combine(backup,"notes.txt"),"user file");
+  new PatchEngine(null).RestoreOriginal(foreign.Root);Original(foreign);Check(!File.Exists(record)&&File.ReadAllText(Path.Combine(backup,"notes.txt"))=="user file"&&File.Exists(Path.Combine(backup,j.backups[0].entry)),"User files protect entire folder while obsolete journal is removed");
+  var nested=Make("restore-cleanup-user-folder");Run(nested);record=Path.Combine(nested.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));backup=Path.Combine(nested.Root,j.backupFolder);Directory.CreateDirectory(Path.Combine(backup,"user-folder"));
+  new PatchEngine(null).RestoreOriginal(nested.Root);Check(!File.Exists(record)&&Directory.Exists(Path.Combine(backup,"user-folder")),"User subdirectory is preserved");
+  var invalid=Make("restore-cleanup-not-original");Run(invalid);record=Path.Combine(invalid.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));backup=Path.Combine(invalid.Root,j.backupFolder);MarkRestored(invalid,j);using(var f=File.OpenWrite(Path.Combine(invalid.Root,"0000.bin"))){f.Position=j.backups[0].offset;f.WriteByte(99);}
+  string beforeRecord=Storage.HashFile(record),beforeGame=Storage.HashFile(Path.Combine(invalid.Root,"0000.bin"));Reject(()=>new PatchEngine(null).RestoreOriginal(invalid.Root),"Rolled-back label alone cannot authorize cleanup");Check(File.Exists(record)&&Directory.Exists(backup)&&Storage.HashFile(record)==beforeRecord&&Storage.HashFile(Path.Combine(invalid.Root,"0000.bin"))==beforeGame,"Original verification failure leaves game and restoration artifacts untouched");
+  var junction=Make("restore-cleanup-junction");Run(junction);record=Path.Combine(junction.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));MarkRestored(junction,j);
+  string outside=Path.Combine(work,"restore-junction-target-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(outside);File.WriteAllBytes(Path.Combine(outside,"0000.bin"),new byte[]{9});j.backupFolder="SO4KoreanPatch.backup."+Guid.NewGuid().ToString("N");backup=Path.Combine(junction.Root,j.backupFolder);Storage.AtomicJson(record,j);
+  DeltaTool.Run(Path.Combine(Environment.GetEnvironmentVariable("WINDIR"),"System32\\cmd.exe"),"/d /c mklink /J "+DeltaTool.Q(backup)+" "+DeltaTool.Q(outside));new PatchEngine(null).RestoreOriginal(junction.Root);
+  Check(!File.Exists(record)&&Directory.Exists(backup)&&File.ReadAllBytes(Path.Combine(outside,"0000.bin")).SequenceEqual(new byte[]{9}),"Restoration cleanup never follows directory junctions");
+  var failure=Make("restore-cleanup-rollback");Reject(()=>Run(failure,i=>{if(i==1)throw new IOException("injected");}),"Install failure rolls back");record=Path.Combine(failure.Root,PatchEngine.RecordName);j=Storage.Json<Journal>(File.ReadAllText(record));Original(failure);Check(j.state=="rolled-back"&&Directory.Exists(Path.Combine(failure.Root,j.backupFolder)),"Automatic failure rollback retains its recovery artifacts for retry");
+  Storage.AtomicJson(Path.Combine(work,"restore-cleanup-tests.json"),new{passed=true,manualRestoreRemovesFolderAndJournal=true,partialCleanupRetry=true,missingFolderRetry=true,preservesUserFilesAndJunctions=true,requiresOriginalHashes=true,automaticRollbackKeepsArtifacts=true});
  }
  static void Full(string game)
  {

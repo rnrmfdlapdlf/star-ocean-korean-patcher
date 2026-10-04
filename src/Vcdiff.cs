@@ -26,9 +26,9 @@ namespace SO4KoreanPatcher
             for(int mode=0;mode<9;mode++)t.Add(new[]{new Instruction(3,4,mode),new Instruction(1,1,0)});
             if(t.Count!=256)throw new InvalidOperationException();return t.ToArray();
         }
-        internal static byte[] Decode(byte[] source,byte[] delta,int expectedLength)
+        internal static byte[] Decode(byte[] source,byte[] delta,int expectedLength,int maximumLength=64*1024*1024)
         {
-            Storage.Require(expectedLength>=0&&expectedLength<=64*1024*1024,"xdelta 출력 길이가 잘못되었습니다.");
+            Storage.Require(maximumLength>0&&maximumLength<=128*1024*1024&&expectedLength>=0&&expectedLength<=maximumLength,"xdelta 출력 길이가 잘못되었습니다.");
             var input=new Reader(delta,0,delta.Length);Storage.Require(input.Byte()==0xd6&&input.Byte()==0xc3&&input.Byte()==0xc4&&input.Byte()==0,"xdelta VCDIFF 헤더가 아닙니다.");
             int header=input.Byte();Storage.Require((header&~4)==0,"지원하지 않는 xdelta 압축 또는 코드표입니다.");if((header&4)!=0)input.Part(input.Number());
             var output=new byte[expectedLength];int total=0;
