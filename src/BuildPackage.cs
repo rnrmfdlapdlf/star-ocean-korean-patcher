@@ -72,7 +72,7 @@ internal static class BuildPackage
   }
   if(File.Exists(file))File.Delete(file);File.Move(temp,file);
   File.WriteAllText(Path.Combine(project,"src/Generated/BuildInfo.cs"),"namespace SO4KoreanPatcher { internal static class BuildInfo { internal const string DataHash = \""+Storage.HashFile(file)+"\", Id = \""+plan.buildId+"\", Version = \""+plan.version+"\"; } }",Storage.Utf8);
-  foreach(string name in new[]{"README.md","LICENSE"}){string target=Path.Combine(release,name);CopyUnchangedAware(Path.Combine(project,name),target);}
+  foreach(string name in new[]{"README.md","LICENSE"}){string target=Path.Combine(release,name);if(name=="README.md"&&File.Exists(target))continue;CopyUnchangedAware(Path.Combine(project,name),target);}
   foreach(string folder in new[]{"docs","samples"})if(Directory.Exists(Path.Combine(project,folder)))foreach(string path in Directory.GetFiles(Path.Combine(project,folder),"*",SearchOption.AllDirectories)){string dest=Path.Combine(release,path.Substring(project.Length+1));Directory.CreateDirectory(Path.GetDirectoryName(dest));CopyUnchangedAware(path,dest);}
   File.WriteAllText(Path.Combine(release,"SO4KoreanPatcher.exe.config"),"<?xml version=\"1.0\"?><configuration><startup><supportedRuntime version=\"v4.0\" sku=\".NETFramework,Version=v4.8\"/></startup><runtime><AppContextSwitchOverrides value=\"Switch.System.IO.UseLegacyPathHandling=false;Switch.System.IO.BlockLongPaths=false\"/></runtime></configuration>",Storage.Utf8);
   Console.WriteLine("Built patch data "+plan.version+" "+new FileInfo(file).Length+" bytes");

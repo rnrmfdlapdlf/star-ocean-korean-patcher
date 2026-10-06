@@ -16,6 +16,13 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[1]
 DEV = PROJECT.parent
 INPUT = DEV / 'work/xbox360/cheats_all_discs_20261004'
+RESOURCE_INPUT = INPUT
+resource_config = DEV / 'work/current_xbox_reference.json'
+if resource_config.is_file():
+    resource_settings = json.loads(resource_config.read_text('utf-8-sig'))
+    RESOURCE_INPUT = (DEV / resource_settings['resourceReference']).resolve()
+    if not RESOURCE_INPUT.is_relative_to(DEV.resolve()):
+        raise ValueError('Xbox resource reference is outside the development directory')
 WORK = DEV / 'work/xbox360/patcher_compact_20261004'
 ASSETS = PROJECT / 'Assets/Xbox360'
 ENCODER = DEV / 'tools/xdelta3-3.2.1/xdelta3-3.2.1-windows-x86_64/xdelta3.exe'
@@ -179,7 +186,7 @@ def main():
     staged_assets = WORK / 'assets'
     staged_assets.mkdir(exist_ok=True)
     plan = json.loads((ASSETS / 'manifest.json').read_text('utf8'))
-    resources = json.loads((INPUT / 'korean-resource-verification.json').read_text('utf8'))
+    resources = json.loads((RESOURCE_INPUT / 'korean-resource-verification.json').read_text('utf8'))
     protected = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in DEV.glob('Star Ocean*.iso')}
     proofs = []
     for disc in plan['discs']:
@@ -245,7 +252,7 @@ def main():
                 print('Disc', number, row['path'], 'verified retained resource delta reused.', flush=True)
                 continue
             print('Disc', number, row['path'], 'extracting original and encoding retained Korean resources.', flush=True)
-            target = INPUT / ('disc%d/files' % number) / row['path']
+            target = RESOURCE_INPUT / ('disc%d/files' % number) / row['path']
             assert target.stat().st_size == expected[row['path']]['size'] and hash_file(target) == expected[row['path']]['sha256']
             source, decoded = stage / ('original-' + row['path']), stage / ('decoded-' + row['path'])
             h, remaining = hashlib.sha256(), row['size']
@@ -269,7 +276,7 @@ def main():
         dest = staged_assets / tool['path']
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
-    plan.update(schema=3, version='v261004', built_at=datetime.now(timezone(timedelta(hours=9))).isoformat(),
+    plan.update(schema=3, version='v' + datetime.now(timezone(timedelta(hours=9))).strftime('%y%m%d'), built_at=datetime.now(timezone(timedelta(hours=9))).isoformat(),
                 arts_collection_names_corrected=True, retained_name_font_and_guide_fixes=True,
                 cheat_options={'1':'이동속도 2배', '2':'전투 종료 후 HP·MP 자동 회복', '4':'세이브 제한 해제'},
                 cheat_default_mask=0, cheat_delta_basis='cheat-free Korean default.xex',

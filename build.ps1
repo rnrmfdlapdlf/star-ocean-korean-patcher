@@ -3,6 +3,21 @@ $ErrorActionPreference='Stop'
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $project=$PSScriptRoot
 $obj=Join-Path $project 'obj'
+$pendingPath=$null
+$currentPath=Join-Path $DevelopmentRoot 'work\current_pc_reference.json'
+if(Test-Path -LiteralPath $currentPath){
+  $current=Get-Content -LiteralPath $currentPath -Raw | ConvertFrom-Json
+  if($current.pendingTranslations){
+    $pendingPath=Join-Path $DevelopmentRoot $current.pendingTranslations
+    & $Python -B (Join-Path $DevelopmentRoot 'tools\refresh_pending_translations.py') prepare $DevelopmentRoot $pendingPath
+    if($LASTEXITCODE -ne 0){throw 'Pending translation reference preparation failed'}
+    $pending=Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json
+    $pendingReference=Join-Path $DevelopmentRoot $pending.target_reference
+    if($Reference -and [IO.Path]::GetFullPath($Reference) -ne [IO.Path]::GetFullPath($pendingReference)){throw 'The selected reference does not include the pending translation corrections.'}
+    $Reference=$pendingReference
+    if($pending.state -ne 'delta_ready'){$Prepare=$true}
+  }
+}
 New-Item -ItemType Directory -Path $obj -Force | Out-Null
 & $compiler /nologo /target:exe /platform:x64 ('/out:'+(Join-Path $obj 'BuildPackage.exe')) /r:System.Web.Extensions.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll (Join-Path $project 'src\Models.cs') (Join-Path $project 'src\DeltaTool.cs') (Join-Path $project 'src\BuildPackage.cs')
 if($LASTEXITCODE -ne 0){throw 'BuildPackage compilation failed'}
@@ -12,6 +27,10 @@ if($Prepare){
   if($Reference){$prepareArgs+=$Reference}
   & (Join-Path $obj 'BuildPackage.exe') $prepareArgs
   if($LASTEXITCODE -ne 0){throw 'xdelta generation failed'}
+  if($pendingPath){
+    & $Python -B (Join-Path $DevelopmentRoot 'tools\refresh_pending_translations.py') mark-ready $DevelopmentRoot $pendingPath
+    if($LASTEXITCODE -ne 0){throw 'Pending translation delta verification failed'}
+  }
 }
 if($PrepareSteamCheats){
   & $Python (Join-Path $project 'tools\build_steam_cheats.py')
