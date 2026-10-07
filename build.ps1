@@ -40,6 +40,8 @@ if($PrepareXboxCheats){
   & $Python -B (Join-Path $project 'tools\build_xbox_cheats.py')
   if($LASTEXITCODE -ne 0){throw 'Xbox cheat delta generation failed'}
 }
+& $Python -B (Join-Path $project 'tools\refresh_title_version.py') --project $project --development-root $DevelopmentRoot --encoder $Encoder
+if($LASTEXITCODE -ne 0){throw 'Title version update failed'}
 & (Join-Path $obj 'BuildPackage.exe') data $project
 if($LASTEXITCODE -ne 0){throw 'Data build failed'}
 $xboxAssets=Join-Path $project 'Assets\Xbox360'

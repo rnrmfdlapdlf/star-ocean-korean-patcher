@@ -1,8 +1,10 @@
 ﻿using System;using System.IO;using System.IO.Compression;using System.Linq;using System.Collections.Generic;using SO4KoreanPatcher;
 internal static class BuildPackage
 {
+ const string NativeHash="21f499f25a5c85185f35b0a7f56231aa9d018ea8c55bb344513b02c431c772d7";
  public sealed class CurrentReference { public string reference {get;set;} }
  public sealed class MessageCheck { public bool passed {get;set;} public string referenceManifestHash {get;set;} public int validatedMessages {get;set;} }
+ public sealed class TitleCheck { public bool passed {get;set;} public string version {get;set;} public string targetHash {get;set;} public string deltaHash {get;set;} public string displayedCredit {get;set;} public string author {get;set;} }
  static void Main(string[] args){try{if(args[0]=="prepare")Prepare(args);else if(args[0]=="data")Data(args[1]);else if(args[0]=="zip")Release(args[1]);else throw new ArgumentException();}catch(Exception e){Console.Error.WriteLine(e);Environment.ExitCode=1;}}
  static void Prepare(string[] args)
  {
@@ -24,7 +26,7 @@ internal static class BuildPackage
   var plan=Storage.Json<Manifest>(File.ReadAllText(manifestPath));
   Storage.Require((plan.format=="source-copy-xor-v1"||plan.format=="xdelta-ranges-v1")&&plan.operations.Length>=1202,"정상 기준본 목록이 다릅니다.");
   string native=Path.Combine(project,"Assets/wininet.dll"),decoder=Path.Combine(Path.GetDirectoryName(encoder),"xdelta3decode.exe");
-  Storage.Require(Storage.HashFile(native)=="bf13768f254c83d6b79a44bac75086953904a9f30500f4ba6eb66b11d00f98ac","정상 기준 DLL이 다릅니다.");
+  Storage.Require(Storage.HashFile(native)==NativeHash,"검증된 이름·폰트 방어 DLL이 다릅니다.");
   var sources=plan.files.ToDictionary(f=>f.name,f=>File.OpenRead(Path.Combine(original,f.name)));
   try
   {
@@ -52,7 +54,13 @@ internal static class BuildPackage
  static void Add(ZipArchive zip,string name,string file){zip.CreateEntryFromFile(file,name,CompressionLevel.Optimal);}
  static void Data(string project)
  {
-  var plan=Storage.Json<Manifest>(File.ReadAllText(Path.Combine(project,"Assets/DeltaManifest.json")));var now=Now();plan.version="v"+now.ToString("yyMMdd");plan.builtAt=now.ToString("o");plan.author="by Gideon";
+  var plan=Storage.Json<Manifest>(File.ReadAllText(Path.Combine(project,"Assets/DeltaManifest.json")));
+  Storage.Require(plan.nativeHash==NativeHash&&Storage.HashFile(Path.Combine(project,"Assets/wininet.dll"))==NativeHash,"검증된 이름·폰트 방어 DLL과 목록이 다릅니다.");
+  var now=Now();plan.version="v"+now.ToString("yyMMdd");plan.builtAt=now.ToString("o");plan.author="by Gideon";
+  string titleInfo=Path.Combine(project,"Assets/TitleVersion.json");
+  Storage.Require(File.Exists(titleInfo),"타이틀 버전 검증 기록이 없습니다. build.ps1로 빌드해 주세요.");
+  var titleCheck=Storage.Json<TitleCheck>(File.ReadAllText(titleInfo));var titles=plan.operations.Where(o=>o.label=="0015.pkg").ToArray();
+  Storage.Require(titles.Length==1&&titleCheck.passed&&titleCheck.version==plan.version&&titleCheck.displayedCredit=="한글패치 "+plan.version&&titleCheck.author==plan.author&&titleCheck.targetHash==titles[0].targetHash&&titleCheck.deltaHash==titles[0].deltaHash,"타이틀 패치정보와 배포 정보 또는 리소스 해시가 다릅니다.");
   string cheatsFile=Path.Combine(project,"Assets/SteamCheats.json");Storage.Require(File.Exists(cheatsFile),"Steam 치트 차분을 먼저 생성해 주세요: tools/build_steam_cheats.py");
   plan.steamCheats=Storage.Json<SteamCheatCatalog>(File.ReadAllText(cheatsFile));
   Storage.Require(plan.steamCheats.schema==1&&plan.steamCheats.baseHash==plan.exeHash&&plan.steamCheats.length>0&&plan.steamCheats.length<=128*1024*1024&&plan.steamCheats.variants.Length==8&&plan.steamCheats.variants.Select(v=>v.mask).OrderBy(x=>x).SequenceEqual(Enumerable.Range(0,8)),"Steam 치트 기준본이 다릅니다.");
