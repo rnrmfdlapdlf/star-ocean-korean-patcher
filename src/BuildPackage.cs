@@ -1,7 +1,7 @@
 ﻿using System;using System.IO;using System.IO.Compression;using System.Linq;using System.Collections.Generic;using SO4KoreanPatcher;
 internal static class BuildPackage
 {
- const string NativeHash="21f499f25a5c85185f35b0a7f56231aa9d018ea8c55bb344513b02c431c772d7";
+ const string NativeHash="ed4ca57b5d0d0b13888f7fbbc76a64f60c9d30b7c7b22e0a53624a0499304c17";
  public sealed class CurrentReference { public string reference {get;set;} }
  public sealed class MessageCheck { public bool passed {get;set;} public string referenceManifestHash {get;set;} public int validatedMessages {get;set;} }
  public sealed class TitleCheck { public bool passed {get;set;} public string version {get;set;} public string targetHash {get;set;} public string deltaHash {get;set;} public string displayedCredit {get;set;} public string author {get;set;} }

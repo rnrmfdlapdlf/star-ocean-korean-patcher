@@ -1,1 +1,1 @@
-namespace SO4KoreanPatcher { internal static class BuildInfo { internal const string DataHash = "726fc379005a5b1da39f90c4e6c6ef45139a571bbd83ee6a85e0db5d2345aede", Id = "e8162e05b657bd41982718ab", Version = "v261007"; } }
+namespace SO4KoreanPatcher { internal static class BuildInfo { internal const string DataHash = "034294b313062ebc7ec9f3704c94c4a5524276b75cb4df399acd80c8ea30310d", Id = "066f9342bf4f3a16713e01c5", Version = "v261115"; } }
